@@ -4,11 +4,10 @@
 FROM node:22-alpine AS web-builder
 RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
 WORKDIR /app
-# Copy .npmrc first so pnpm fetches musl native bindings (needed on Alpine)
+# Copy .npmrc first so pnpm resolves musl native bindings (needed on Alpine).
+# The lockfile already includes musl entries thanks to supportedArchitectures in .npmrc.
 COPY ui/web/.npmrc ui/web/package.json ui/web/pnpm-lock.yaml ./
-# Use --no-frozen-lockfile so pnpm can fetch musl native bindings missing from macOS-generated lockfile.
-# Lockfile is still copied above to pin versions; .npmrc sets supportedArchitectures for Alpine (musl).
-RUN pnpm install --no-frozen-lockfile
+RUN pnpm install --frozen-lockfile
 COPY ui/web/ .
 RUN pnpm build
 
@@ -96,7 +95,7 @@ RUN set -eux; \
         fi; \
     fi; \
     if [ "$ENABLE_CLAUDE_CLI" = "true" ]; then \
-        npm install -g --cache /tmp/npm-cache @anthropic-ai/claude-code; \
+        npm install -g --cache /tmp/npm-cache @anthropic-ai/claude-code@^1.0.47; \
         rm -rf /tmp/npm-cache; \
     fi; \
     rm -f /tmp/requirements-base.txt /tmp/requirements-skills.txt

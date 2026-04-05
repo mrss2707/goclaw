@@ -1,5 +1,5 @@
--- Deduplicate existing active jobs before adding constraint.
--- Keep the oldest job (smallest created_at) for each (tenant_id, agent_id, user_id, name) group.
+-- Rename duplicate active jobs before adding constraint (safe: no data loss, reversible).
+-- Oldest job (smallest created_at) keeps its name; newer duplicates get a '-dup-{id[:8]}' suffix.
 WITH dupes AS (
     SELECT id, ROW_NUMBER() OVER (
         PARTITION BY tenant_id, COALESCE(agent_id, '00000000-0000-0000-0000-000000000000'),
@@ -9,7 +9,9 @@ WITH dupes AS (
     FROM cron_jobs
     WHERE enabled = true
 )
-DELETE FROM cron_jobs WHERE id IN (SELECT id FROM dupes WHERE rn > 1);
+UPDATE cron_jobs
+SET name = name || '-dup-' || substr(id::text, 1, 8)
+WHERE id IN (SELECT id FROM dupes WHERE rn > 1);
 
 -- Partial unique index: one active job per name per tenant+agent+user.
 CREATE UNIQUE INDEX idx_cron_jobs_unique_active_name

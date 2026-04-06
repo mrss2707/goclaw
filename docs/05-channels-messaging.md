@@ -156,7 +156,7 @@ flowchart TD
 
 | Feature | Telegram | Feishu/Lark | Discord | Slack | WhatsApp | Zalo OA | Zalo Personal |
 |---------|----------|-------------|---------|-------|----------|---------|---------------|
-| Connection | Long polling | WS (default) / Webhook | Gateway events | Socket Mode | Native protocol (in-process whatsmeow) | Long polling | Internal protocol |
+| Connection | Long polling | WS (default) / Webhook | Gateway events | Socket Mode | Direct protocol (in-process) | Long polling | Internal protocol |
 | DM support | Yes | Yes | Yes | Yes | Yes | Yes (DM only) | Yes |
 | Group support | Yes (mention gating) | Yes | Yes | Yes (mention gating + thread cache) | Yes | No | Yes |
 | Forum/Topics | Yes (per-topic config) | Yes (topic session mode) | -- | -- | -- | -- | -- |
@@ -430,14 +430,14 @@ Auto-enables when both bot_token and app_token are set.
 
 ## 9. WhatsApp
 
-The WhatsApp channel connects directly to the WhatsApp network via the native `go.mau.fi/whatsmeow` library. Authentication state is stored in the database (PostgreSQL standard, SQLite for desktop edition).
+The WhatsApp channel connects directly to the WhatsApp network via the multi-device protocol. Authentication state is stored in the database (PostgreSQL standard, SQLite for desktop edition).
 
 ### Key Behaviors
 
-- **Native protocol**: In-process WhatsApp client using whatsmeow library (direct to WhatsApp servers, no external bridge)
-- **Database auth store**: Uses `whatsmeow/store/sqlstore` to persist auth state, keys, and device info
+- **Direct connection**: In-process WhatsApp client (direct to WhatsApp servers, no external bridge)
+- **Database auth store**: Persists auth state, keys, and device info in the database
 - **QR code authentication**: Interactive QR code for initial pairing, served via WebSocket API
-- **Auto-reconnect**: Built-in whatsmeow reconnection with exponential backoff
+- **Auto-reconnect**: Built-in reconnection with exponential backoff
 - **DM and group support**: Full group messaging with mention detection via JID format
 - **Media handling**: Direct media download/upload to WhatsApp servers with type detection
 - **Typing indicators**: Typing state managed per chat with auto-refresh
@@ -593,7 +593,7 @@ flowchart TD
 | `internal/channels/slack/format.go` | Markdown → Slack mrkdwn pipeline |
 | `internal/channels/slack/reactions.go` | Status emoji reactions on messages |
 | `internal/channels/slack/stream.go` | Streaming message updates via placeholder editing |
-| `internal/channels/whatsapp/whatsapp.go` | WhatsApp: native whatsmeow client, QR auth, sqlstore persistence |
+| `internal/channels/whatsapp/whatsapp.go` | WhatsApp: direct protocol client, QR auth, database persistence |
 | `internal/channels/whatsapp/factory.go` | Channel factory, database dialect detection |
 | `internal/channels/whatsapp/qr_methods.go` | QR code generation and authentication flow |
 | `internal/channels/whatsapp/format.go` | Message formatting (HTML-to-WhatsApp) |

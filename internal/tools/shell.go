@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -31,30 +32,31 @@ func DefaultDenyPatterns() []*regexp.Regexp {
 
 // ExecTool executes shell commands, optionally inside a sandbox container.
 type ExecTool struct {
-	workspace       string
+	workspace        string
 	timeout          time.Duration
-	pathDenyPatterns []*regexp.Regexp     // always-on path-based denials (DenyPaths)
-	denyExemptions   []string             // substrings that exempt a command from deny
+	pathDenyPatterns []*regexp.Regexp // always-on path-based denials (DenyPaths)
+	pathDenyRoots    []string         // raw deny roots for nested workspace exemptions
+	denyExemptions   []string         // substrings that exempt a command from deny
 	restrict         bool
 	sandboxMgr       sandbox.Manager      // nil = no sandbox, execute on host
 	approvalMgr      *ExecApprovalManager // nil = no approval needed
 	agentID          string               // for approval request context
-	secureCLIStore   store.SecureCLIStore  // nil = no credentialed exec
+	secureCLIStore   store.SecureCLIStore // nil = no credentialed exec
 }
 
 // NewExecTool creates an exec tool that runs commands directly on the host.
 func NewExecTool(workspace string, restrict bool) *ExecTool {
 	return &ExecTool{
 		workspace: workspace,
-		timeout:    60 * time.Second,
-		restrict:   restrict,
+		timeout:   60 * time.Second,
+		restrict:  restrict,
 	}
 }
 
 // NewSandboxedExecTool creates an exec tool that routes commands through a sandbox container.
 func NewSandboxedExecTool(workspace string, restrict bool, mgr sandbox.Manager) *ExecTool {
 	return &ExecTool{
-		workspace: workspace,
+		workspace:  workspace,
 		timeout:    300 * time.Second, // sandbox allows longer timeout
 		restrict:   restrict,
 		sandboxMgr: mgr,
@@ -70,6 +72,7 @@ func (t *ExecTool) DenyPaths(paths ...string) {
 	for _, p := range paths {
 		escaped := regexp.QuoteMeta(p)
 		t.pathDenyPatterns = append(t.pathDenyPatterns, regexp.MustCompile(escaped))
+		t.pathDenyRoots = append(t.pathDenyRoots, p)
 	}
 }
 
@@ -94,6 +97,80 @@ func normalizeCommand(s string) string {
 		"\ufeff", "", // BOM / zero-width no-break space
 	).Replace(s)
 	return s
+}
+
+func (t *ExecTool) dynamicPathExemptions(ctx context.Context) []string {
+	var exemptions []string
+	seen := make(map[string]struct{}, 4)
+	workspace := ToolWorkspaceFromCtx(ctx)
+	teamWorkspace := ToolTeamWorkspaceFromCtx(ctx)
+
+	var dirs []string
+	if teamWorkspace != "" {
+		dirs = append(dirs, teamWorkspace)
+	}
+	if workspace != "" && filepath.Clean(workspace) != filepath.Clean(teamWorkspace) {
+		dirs = append(dirs, filepath.Join(workspace, ".uploads"))
+	}
+
+	for _, dir := range dirs {
+		if dir == "" || strings.Contains(dir, "..") {
+			continue
+		}
+		cleanDir := filepath.Clean(dir)
+		if !t.isNestedUnderDeniedRoot(cleanDir) {
+			continue
+		}
+		for _, ex := range []string{cleanDir, cleanDir + string(filepath.Separator)} {
+			if _, ok := seen[ex]; ok {
+				continue
+			}
+			seen[ex] = struct{}{}
+			exemptions = append(exemptions, ex)
+		}
+	}
+	return exemptions
+}
+
+func (t *ExecTool) isNestedUnderDeniedRoot(path string) bool {
+	for _, root := range t.pathDenyRoots {
+		cleanRoot := filepath.Clean(root)
+		if cleanRoot == "." || cleanRoot == string(filepath.Separator) {
+			continue
+		}
+		if filepath.IsAbs(cleanRoot) != filepath.IsAbs(path) {
+			continue
+		}
+		if path == cleanRoot {
+			continue
+		}
+		if strings.HasPrefix(path, cleanRoot+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesPathExemption(path string, exemptions []string) bool {
+	sep := string(filepath.Separator)
+	for _, ex := range exemptions {
+		if ex == "" {
+			continue
+		}
+		if path == ex {
+			return true
+		}
+		if strings.HasSuffix(ex, sep) {
+			if strings.HasPrefix(path, ex) {
+				return true
+			}
+			continue
+		}
+		if strings.HasPrefix(path, ex+sep) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetApprovalManager sets the exec approval manager for this tool.
@@ -155,6 +232,8 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *Result {
 	allPatterns := make([]*regexp.Regexp, 0, len(groupPatterns)+len(t.pathDenyPatterns))
 	allPatterns = append(allPatterns, groupPatterns...)
 	allPatterns = append(allPatterns, t.pathDenyPatterns...)
+	exemptions := append([]string{}, t.denyExemptions...)
+	exemptions = append(exemptions, t.dynamicPathExemptions(ctx)...)
 
 	// Check for dangerous commands (applies to both host and sandbox).
 	for _, pattern := range allPatterns {
@@ -179,11 +258,8 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *Result {
 				if strings.Contains(clean, "..") {
 					continue // path traversal — never exempt
 				}
-				for _, ex := range t.denyExemptions {
-					if strings.HasPrefix(clean, ex) {
-						exemptFields++
-						break
-					}
+				if matchesPathExemption(clean, exemptions) {
+					exemptFields++
 				}
 			}
 			// Exempt only if at least one field matched AND all matched fields are exempt.

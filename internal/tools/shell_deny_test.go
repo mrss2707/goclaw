@@ -572,6 +572,31 @@ func TestExecute_DoesNotExemptSymlinkEscapeInsideTeamWorkspace(t *testing.T) {
 	}
 }
 
+func TestExecute_AllowsLegacyWorkspaceUploadsLayout(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := filepath.Join(dataDir, ".goclaw", "goclaw-workspace", "ws", "system")
+	legacyUploads := filepath.Join(workspace, "uploads")
+	if err := os.MkdirAll(legacyUploads, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	target := filepath.Join(legacyUploads, "Quarterly Report.png")
+	if err := os.WriteFile(target, []byte("ok"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	tool := NewExecTool("/workspace", false)
+	tool.DenyPaths(dataDir, ".goclaw/")
+
+	ctx := WithToolWorkspace(context.Background(), workspace)
+	result := tool.Execute(ctx, map[string]any{
+		"command": "cp \"" + target + "\" /tmp/partner.png",
+	})
+
+	if strings.Contains(result.ForLLM, "command denied by safety policy") {
+		t.Fatalf("expected legacy uploads layout to bypass deny, got: %s", result.ForLLM)
+	}
+}
+
 func TestLimitedBuffer(t *testing.T) {
 	t.Run("under limit", func(t *testing.T) {
 		lb := &limitedBuffer{max: 100}

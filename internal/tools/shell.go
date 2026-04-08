@@ -113,6 +113,7 @@ func (t *ExecTool) dynamicPathExemptions(ctx context.Context) []string {
 	}
 	if workspace != "" && filepath.Clean(workspace) != filepath.Clean(teamWorkspace) {
 		dirs = append(dirs, filepath.Join(workspace, ".uploads"))
+		dirs = append(dirs, filepath.Join(workspace, "uploads"))
 	}
 
 	for _, dir := range dirs {

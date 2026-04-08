@@ -137,16 +137,16 @@ ul { margin-left: 1.1rem; color: var(--muted); }
   </div>
   <div class="summary-card">
     <h3>Root Cause</h3>
-    <p>Path exemptions were static and non-shell-aware, so quoted or prefixed workspace paths still matched the deny root.</p>
+    <p>Path exemptions were static and non-shell-aware, so quoted, prefixed, and legacy screenshot-era upload paths still matched the deny root.</p>
   </div>
   <div class="summary-card">
     <h3>Fix</h3>
-    <p>Shell-aware parsing + canonical path checks now exempt only the active personal <code>.uploads</code> subtree and the active team workspace.</p>
+    <p>Shell-aware parsing + canonical path checks now exempt the active personal <code>.uploads</code> subtree, the legacy <code>uploads</code> subtree, and the active team workspace.</p>
   </div>
 </div>
 
 <div class="env">
-  Before source: <code>claw</code> baseline checkout from <code>/opt/goclaw</code> at commit <code>0e2282be</code>, exercised inside a temporary Go container on the machine. After source: current local worktree at PR head <code>5fc5cdfa</code>. Supporting live recreation used the real <code>GLM thục bô</code> chat surface on <code>claw:3000</code>. Callout border marks the noteworthy runtime section.
+  Before source: <code>claw</code> baseline checkout from <code>/opt/goclaw</code> at commit <code>0e2282be</code>, exercised inside a temporary Go container on the machine. After source: current local worktree at PR head <code>7a1c278c</code>. Supporting live recreation used the real <code>GLM thục bô</code> chat surface on <code>claw:3000</code>. Callout border marks the noteworthy runtime section.
 </div>
 
 <div class="supporting">
@@ -168,21 +168,24 @@ ul { margin-left: 1.1rem; color: var(--muted); }
 <pre class="terminal">$ ssh claw 'docker run --rm -v /tmp/goclaw-739-before:/src -w /src golang:1.26 sh -lc "/usr/local/go/bin/go test ./cmd -run TestSetupToolRegistryExecWorkspacePaths -count=1 -v"'
 === RUN   TestSetupToolRegistryExecWorkspacePaths
 === RUN   TestSetupToolRegistryExecWorkspacePaths/personal_workspace_prefixed_uploads_allowed
-<span class="hl-bad">gateway_setup_exec_workspace_test.go:117: denied = true, want false; output = command denied by safety policy: matches pattern /tmp/TestSetupToolRegistryExecWorkspacePaths.../001</span>
+<span class="hl-bad">gateway_setup_exec_workspace_test.go:133: denied = true, want false; output = command denied by safety policy: matches pattern /tmp/TestSetupToolRegistryExecWorkspacePaths.../001</span>
 === RUN   TestSetupToolRegistryExecWorkspacePaths/team_workspace_quoted_input_allowed
-<span class="hl-bad">gateway_setup_exec_workspace_test.go:117: denied = true, want false; output = command denied by safety policy: matches pattern /tmp/TestSetupToolRegistryExecWorkspacePaths.../001</span>
+<span class="hl-bad">gateway_setup_exec_workspace_test.go:133: denied = true, want false; output = command denied by safety policy: matches pattern /tmp/TestSetupToolRegistryExecWorkspacePaths.../001</span>
+=== RUN   TestSetupToolRegistryExecWorkspacePaths/legacy_dotgoclaw_uploads_layout_allowed
+<span class="hl-bad">gateway_setup_exec_workspace_test.go:133: denied = true, want false; output = command denied by safety policy: matches pattern /tmp/TestSetupToolRegistryExecWorkspacePaths.../001</span>
 === RUN   TestSetupToolRegistryExecWorkspacePaths/team_workspace_symlink_escape_denied
 === RUN   TestSetupToolRegistryExecWorkspacePaths/unrelated_data_dir_path_denied
 === RUN   TestSetupToolRegistryExecWorkspacePaths/workspace_local_dotgoclaw_denied
 --- FAIL: TestSetupToolRegistryExecWorkspacePaths (0.01s)
     --- FAIL: personal_workspace_prefixed_uploads_allowed
     --- FAIL: team_workspace_quoted_input_allowed
+    --- FAIL: legacy_dotgoclaw_uploads_layout_allowed
     --- PASS: team_workspace_symlink_escape_denied
     --- PASS: unrelated_data_dir_path_denied
     --- PASS: workspace_local_dotgoclaw_denied
 FAIL</pre>
       </div>
-      <p class="desc">Baseline on <code>claw</code>: the deployed code still denies representative active-workspace paths when they are quoted or prefixed inside a command argument.</p>
+      <p class="desc">Baseline on <code>claw</code>: the deployed code still denies representative active-workspace paths when they are quoted, prefixed, or stored in the screenshot-era <code>.goclaw/.../uploads</code> layout.</p>
     </div>
     <div>
       <div class="col-header after">After</div>
@@ -191,12 +194,14 @@ FAIL</pre>
 === RUN   TestSetupToolRegistryExecWorkspacePaths
 === RUN   TestSetupToolRegistryExecWorkspacePaths/personal_workspace_prefixed_uploads_allowed
 === RUN   TestSetupToolRegistryExecWorkspacePaths/team_workspace_quoted_input_allowed
+=== RUN   TestSetupToolRegistryExecWorkspacePaths/legacy_dotgoclaw_uploads_layout_allowed
 === RUN   TestSetupToolRegistryExecWorkspacePaths/team_workspace_symlink_escape_denied
 === RUN   TestSetupToolRegistryExecWorkspacePaths/unrelated_data_dir_path_denied
 === RUN   TestSetupToolRegistryExecWorkspacePaths/workspace_local_dotgoclaw_denied
 <span class="hl-good">--- PASS: TestSetupToolRegistryExecWorkspacePaths (0.01s)</span>
 <span class="hl-good">    --- PASS: personal_workspace_prefixed_uploads_allowed</span>
 <span class="hl-good">    --- PASS: team_workspace_quoted_input_allowed</span>
+<span class="hl-good">    --- PASS: legacy_dotgoclaw_uploads_layout_allowed</span>
 <span class="hl-good">    --- PASS: team_workspace_symlink_escape_denied</span>
 <span class="hl-good">    --- PASS: unrelated_data_dir_path_denied</span>
 <span class="hl-good">    --- PASS: workspace_local_dotgoclaw_denied</span>
@@ -210,7 +215,7 @@ FAIL</pre>
 <div class="comparison">
   <h2>What This Proves</h2>
   <ul>
-    <li>Quoted/prefixed upload arguments now survive the deny matcher when they point into the active personal <code>.uploads</code> subtree or active team workspace.</li>
+    <li>Quoted/prefixed upload arguments now survive the deny matcher when they point into the active personal <code>.uploads</code> subtree, the legacy <code>.goclaw/.../uploads</code> subtree, or the active team workspace.</li>
     <li>Symlink escapes, unrelated <code>dataDir</code> files, and workspace-local <code>.goclaw/*</code> remain denied.</li>
     <li>The behavioral difference is shown against a real <code>claw</code> baseline and the exact current worktree code that backs PR #748.</li>
   </ul>

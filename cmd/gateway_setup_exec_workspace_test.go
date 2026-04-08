@@ -69,12 +69,22 @@ func TestSetupToolRegistryExecWorkspacePaths(t *testing.T) {
 	if err := os.Symlink(protectedPath, symlinkPath); err != nil {
 		t.Fatalf("Symlink() error = %v", err)
 	}
+	legacyWorkspace := filepath.Join(dataDir, ".goclaw", "goclaw-workspace", "ws", "system")
+	legacyUploadPath := filepath.Join(legacyWorkspace, "uploads", "Quarterly Report.png")
+	legacyCopyTarget := filepath.Join(t.TempDir(), "partner.png")
+	if err := os.MkdirAll(filepath.Dir(legacyUploadPath), 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(legacyUploadPath, []byte("ok"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
 
 	tests := []struct {
 		name       string
 		ctx        context.Context
 		command    string
 		wantDenied bool
+		wantPath   string
 	}{
 		{
 			name:    "personal_workspace_prefixed_uploads_allowed",
@@ -85,6 +95,12 @@ func TestSetupToolRegistryExecWorkspacePaths(t *testing.T) {
 			name:    "team_workspace_quoted_input_allowed",
 			ctx:     tools.WithToolTeamWorkspace(tools.WithToolWorkspace(context.Background(), workspace), teamWorkspace),
 			command: "printf '%s' --input=\"" + teamFilePath + "\"",
+		},
+		{
+			name:     "legacy_dotgoclaw_uploads_layout_allowed",
+			ctx:      tools.WithToolWorkspace(context.Background(), legacyWorkspace),
+			command:  "cp \"" + legacyUploadPath + "\" \"" + legacyCopyTarget + "\"",
+			wantPath: legacyCopyTarget,
 		},
 		{
 			name:       "team_workspace_symlink_escape_denied",
@@ -116,7 +132,11 @@ func TestSetupToolRegistryExecWorkspacePaths(t *testing.T) {
 			if denied != tc.wantDenied {
 				t.Fatalf("denied = %v, want %v; output = %s", denied, tc.wantDenied, result.ForLLM)
 			}
-			if !tc.wantDenied && !strings.Contains(result.ForLLM, "Quarterly Report.png") {
+			if tc.wantPath != "" {
+				if _, err := os.Stat(tc.wantPath); err != nil {
+					t.Fatalf("expected copied file at %q, got stat error: %v", tc.wantPath, err)
+				}
+			} else if !tc.wantDenied && !strings.Contains(result.ForLLM, "Quarterly Report.png") {
 				t.Fatalf("expected output to contain quoted file path, got: %s", result.ForLLM)
 			}
 		})

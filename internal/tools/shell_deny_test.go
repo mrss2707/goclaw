@@ -536,9 +536,6 @@ func TestExecute_AllowsQuotedAndPrefixedUploadArguments(t *testing.T) {
 }
 
 func TestExecute_DoesNotExemptSymlinkEscapeInsideTeamWorkspace(t *testing.T) {
-	if err := os.MkdirAll(t.TempDir(), 0755); err != nil {
-		t.Fatalf("TempDir setup error = %v", err)
-	}
 	dataDir := t.TempDir()
 	workspace := filepath.Join(dataDir, "personal")
 	teamWorkspace := filepath.Join(dataDir, "teams", "team-123")

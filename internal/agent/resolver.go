@@ -57,6 +57,7 @@ type ResolverDeps struct {
 	SandboxEnabled         bool
 	SandboxContainerDir    string
 	SandboxWorkspaceAccess string
+	BrowserLevel           string // "simple" (default) or "advanced" — controls browser prompt section
 
 	// Inter-agent delegation
 	AgentLinkStore store.AgentLinkStore
@@ -461,6 +462,7 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			ShellDenyGroups:        ag.ParseShellDenyGroups(),
 			BrowserUseProxy:       ag.ParseBrowserUseProxy(),
 			BrowserOpts:           parseBrowserOptsPtr(ag),
+			BrowserLevel:          deps.BrowserLevel,
 			ConfigPermStore:        deps.ConfigPermStore,
 			TeamStore:              deps.TeamStore,
 			SecureCLIStore:         deps.SecureCLIStore,

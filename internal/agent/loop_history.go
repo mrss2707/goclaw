@@ -230,6 +230,7 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 		SandboxContainerDir:    l.sandboxContainerDir,
 		SandboxWorkspaceAccess: l.sandboxWorkspaceAccess,
 		ShellDenyGroups:        l.shellDenyGroups,
+		BrowserLevel:           l.browserLevel,
 		SelfEvolve:             l.selfEvolve,
 		ProviderType:           providerTypeOf(l.provider),
 		CredentialCLIContext:   l.buildCredentialCLIContext(ctx),

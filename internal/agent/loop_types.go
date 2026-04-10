@@ -147,6 +147,7 @@ type Loop struct {
 	// Browser: per-agent proxy opt-in (default false)
 	browserUseProxy bool
 	browserOpts     *store.BrowserOpts
+	browserLevel    string // "simple" or "advanced" — controls system prompt browser section
 
 	// Event callback for broadcasting agent events (run.started, chunk, tool.call, etc.)
 	onEvent func(event AgentEvent)
@@ -297,6 +298,7 @@ type LoopConfig struct {
 	// Browser: per-agent proxy opt-in (default false — agent must explicitly enable)
 	BrowserUseProxy bool
 	BrowserOpts     *store.BrowserOpts
+	BrowserLevel    string // "simple" or "advanced" — controls system prompt browser section
 
 	// Agent UUID + tenant for context propagation to tools
 	AgentUUID   uuid.UUID
@@ -465,6 +467,7 @@ func NewLoop(cfg LoopConfig) *Loop {
 		shellDenyGroups:        cfg.ShellDenyGroups,
 		browserUseProxy:       cfg.BrowserUseProxy,
 		browserOpts:           cfg.BrowserOpts,
+		browserLevel:          cfg.BrowserLevel,
 		traceCollector:         cfg.TraceCollector,
 		inputGuard:             guard,
 		injectionAction:        action,

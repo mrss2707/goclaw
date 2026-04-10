@@ -166,6 +166,7 @@ func wireExtras(
 		SandboxEnabled:         sandboxEnabled,
 		SandboxContainerDir:    sandboxContainerDir,
 		SandboxWorkspaceAccess: sandboxWorkspaceAccess,
+		BrowserLevel:           appCfg.Tools.Browser.Level,
 		AgentLinkStore:         stores.AgentLinks,
 		TeamStore:              stores.Teams,
 		DataDir:                workspace,

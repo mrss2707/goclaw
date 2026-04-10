@@ -12,7 +12,7 @@ import (
 func newTestTool(sm *StorageManager) *BrowserTool {
 	eng := newMockEngine()
 	m := newTestManager(eng)
-	return NewBrowserTool(m, sm, nil, nil, nil)
+	return NewBrowserTool(m, sm, nil, nil, nil, "")
 }
 
 // openTestTab opens a tab in the test tool and returns the targetID.

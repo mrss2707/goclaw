@@ -215,6 +215,24 @@ func buildSandboxSection(cfg SystemPromptConfig) []string {
 	return lines
 }
 
+// buildBrowserSection creates the "### Browser" workflow section.
+// Workflow guidance moved from tool Description to system prompt to save tool-definition tokens.
+func buildBrowserSection(level string) []string {
+	lines := []string{
+		"",
+		"### Browser",
+		"Workflow: start -> open(targetUrl) -> snapshot -> act(request) -> snapshot (repeat).",
+		"Snapshot returns AX tree with refs (e1, e2...). Use refs in act requests.",
+	}
+	if level == "advanced" {
+		lines = append(lines,
+			"Extended actions: cookies(get/set/clear), storage(get/set/clear), emulate, pdf, profiles, screencast, liveview.create.",
+			"Proxy applied automatically when configured.",
+		)
+	}
+	return lines
+}
+
 // buildToolCallStyleSection generates the ## Tool Call Style section.
 // Matches TS system-prompt.ts "Tool Call Style" — narration minimalism + non-disclosure.
 // Prevents the agent from exposing internal tool names to users.

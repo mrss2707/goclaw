@@ -15,12 +15,10 @@ import type { BuiltinToolData } from "./hooks/use-builtin-tools";
 import { MEDIA_TOOLS } from "./media-provider-params-schema";
 import { MediaProviderChainForm } from "./media-provider-chain-form";
 import { KGSettingsForm } from "./kg-settings-form";
-import { BrowserSettingsForm } from "./browser-settings-form";
 import { WebFetchExtractorChainForm } from "./web-fetch-extractor-chain-form";
 
 const KG_TOOL = "knowledge_graph_search";
 const WEB_FETCH_TOOL = "web_fetch";
-const BROWSER_TOOL = "browser";
 
 interface Props {
   tool: BuiltinToolData | null;
@@ -33,7 +31,6 @@ export function BuiltinToolSettingsDialog({ tool, open, onOpenChange, onSave }: 
   const isMedia = tool ? MEDIA_TOOLS.has(tool.name) : false;
   const isKG = tool?.name === KG_TOOL;
   const isWebFetch = tool?.name === WEB_FETCH_TOOL;
-  const isBrowser = tool?.name === BROWSER_TOOL;
   const wide = isMedia || isKG || isWebFetch;
 
   return (
@@ -41,12 +38,6 @@ export function BuiltinToolSettingsDialog({ tool, open, onOpenChange, onSave }: 
       <DialogContent className={wide ? "sm:max-w-2xl" : "sm:max-w-md"}>
         {isWebFetch && tool ? (
           <WebFetchExtractorChainForm
-            initialSettings={tool.settings ?? {}}
-            onSave={(settings) => onSave(tool.name, settings).then(() => onOpenChange(false))}
-            onCancel={() => onOpenChange(false)}
-          />
-        ) : isBrowser && tool ? (
-          <BrowserSettingsForm
             initialSettings={tool.settings ?? {}}
             onSave={(settings) => onSave(tool.name, settings).then(() => onOpenChange(false))}
             onCancel={() => onOpenChange(false)}

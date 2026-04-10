@@ -412,6 +412,7 @@ type WebFetchPolicyConfig struct {
 // BrowserToolConfig controls the browser automation tool.
 type BrowserToolConfig struct {
 	Enabled          bool    `json:"enabled"`                        // enable the browser tool (default false)
+	Level            string  `json:"level,omitempty"`                // "simple" (default) or "advanced" — controls tool schema size
 	Mode             string  `json:"mode,omitempty"`                 // "host" (default), "docker", "remote", "k8s"
 	Headless         bool    `json:"headless"`                       // run Chrome in headless mode (ignored when RemoteURL is set)
 	RemoteURL        string  `json:"remote_url,omitempty"`           // CDP endpoint for remote Chrome sidecar, e.g. "ws://chrome:9222"

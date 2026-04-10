@@ -186,7 +186,7 @@ func setupToolRegistry(
 			profilesWorkspace = cfg.Tools.Browser.ProfilesDir
 		}
 		storageMgr := browser.NewStorageManager(profilesWorkspace, nil)
-		toolsReg.Register(browser.NewBrowserTool(browserMgr, storageMgr, nil, nil, nil))
+		toolsReg.Register(browser.NewBrowserTool(browserMgr, storageMgr, nil, nil, nil, cfg.Tools.Browser.Level))
 	}
 
 	// Web tools (web_search + web_fetch)

@@ -135,6 +135,23 @@ export function BrowserRuntimeSection({ data, onSave, saving }: Props) {
           />
         </div>
 
+        {/* Level selector */}
+        <div className="space-y-2">
+          <InfoLabel tip={t("tools.browserLevelTip")}>{t("tools.browserLevel")}</InfoLabel>
+          <div className="flex gap-1">
+            {(["simple", "advanced"] as const).map((lvl) => (
+              <Button
+                key={lvl}
+                variant={(browser.level || "simple") === lvl ? "default" : "outline"}
+                size="sm"
+                onClick={() => updateBrowser({ level: lvl })}
+              >
+                {t(`tools.browserLevel_${lvl}`)}
+              </Button>
+            ))}
+          </div>
+        </div>
+
         <Separator />
 
         {/* Mode selector */}

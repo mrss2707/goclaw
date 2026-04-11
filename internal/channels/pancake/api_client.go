@@ -190,6 +190,8 @@ func (c *APIClient) PrivateReply(ctx context.Context, conversationID, content st
 }
 
 // GetPosts fetches recent posts for the page (used by PostFetcher for comment context enrichment).
+// Bypasses doRequest because it needs to parse a JSON response body (doRequest discards the body).
+// Connection reuse is preserved: defer res.Body.Close() + io.ReadAll drain the body fully.
 func (c *APIClient) GetPosts(ctx context.Context, limit int) ([]PancakePost, error) {
 	if limit <= 0 {
 		limit = 20

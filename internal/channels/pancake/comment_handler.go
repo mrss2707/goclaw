@@ -119,6 +119,10 @@ func (ch *Channel) buildCommentContent(data MessagingData) string {
 	// Fetch post context best-effort — on failure, fall back to comment text only.
 	if data.PostID != "" {
 		post, err := ch.postFetcher.GetPost(ch.stopCtx, data.PostID)
+		if err != nil {
+			slog.Debug("pancake: post context fetch failed, using comment only",
+				"page_id", ch.pageID, "post_id", data.PostID, "err", err)
+		}
 		if err == nil && post != nil && post.Message != "" {
 			sb.WriteString("[Bai dang] ")
 			sb.WriteString(post.Message)

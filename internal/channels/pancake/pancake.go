@@ -234,6 +234,10 @@ func (ch *Channel) sendInboxReply(ctx context.Context, msg bus.OutboundMessage) 
 
 // sendCommentReply replies to a comment and optionally sends a one-time first-inbox DM.
 func (ch *Channel) sendCommentReply(ctx context.Context, msg bus.OutboundMessage) error {
+	// Bound API calls: ReplyComment + PrivateReply can hang if Pancake is slow.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	conversationID := msg.ChatID
 	text := FormatOutbound(msg.Content, ch.platform)
 

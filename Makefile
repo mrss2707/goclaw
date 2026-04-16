@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --abbrev=0 --match "v[0-9]*" 2>/dev/null 
 LDFLAGS  = -s -w -X github.com/nextlevelbuilder/goclaw/cmd.Version=$(VERSION)
 BINARY   = goclaw
 
-.PHONY: build build-full build-tui run clean version up down logs reset test vet check-web dev migrate setup ci desktop-dev desktop-build desktop-dmg
+.PHONY: build build-full build-tui run clean version up down logs reset public-sandbox-build public-up public-down public-logs public-upgrade test vet check-web dev migrate setup ci desktop-dev desktop-build desktop-dmg
 
 # Build backend only (API-only, no embedded web UI)
 build:
@@ -57,6 +57,7 @@ COMPOSE_EXTRA += -f docker-compose.claude-cli.yml
 endif
 COMPOSE = $(COMPOSE_BASE) $(COMPOSE_EXTRA)
 UPGRADE = docker compose -f docker-compose.yml -f docker-compose.postgres.yml -f docker-compose.upgrade.yml
+PUBLIC_COMPOSE = docker compose -f docker-compose.public.yml
 
 version-file:
 	@echo $(VERSION) > VERSION
@@ -74,6 +75,22 @@ logs:
 reset: version-file
 	$(COMPOSE) down -v
 	$(COMPOSE) up -d --build
+
+public-sandbox-build:
+	docker build -t goclaw-sandbox:bookworm-slim -f Dockerfile.sandbox .
+
+public-up: version-file public-sandbox-build
+	GOCLAW_VERSION=$(VERSION) $(PUBLIC_COMPOSE) up -d --build
+	GOCLAW_VERSION=$(VERSION) $(PUBLIC_COMPOSE) --profile maintenance run --rm upgrade
+
+public-down:
+	$(PUBLIC_COMPOSE) down
+
+public-logs:
+	$(PUBLIC_COMPOSE) logs -f proxy goclaw
+
+public-upgrade: version-file
+	GOCLAW_VERSION=$(VERSION) $(PUBLIC_COMPOSE) --profile maintenance run --rm upgrade
 
 test:
 	go test -race -timeout=90s ./...

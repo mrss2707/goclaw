@@ -16,6 +16,13 @@ mkdir -p "$RUNTIME_DIR/pip" "$RUNTIME_DIR/npm-global/lib" "$RUNTIME_DIR/pip-cach
 if [ "$(id -u)" = "0" ] && [ -d "$RUNTIME_DIR" ]; then
   chown root:goclaw "$RUNTIME_DIR" 2>/dev/null || true
   chmod 0750 "$RUNTIME_DIR" 2>/dev/null || true
+  # Docker Desktop exposes /var/run/docker.sock as root:root. Public Docker
+  # deployments may run the app as goclaw:root so sandbox tools can reach that
+  # socket. In that mode, keep the runtime parent traversable by the app UID;
+  # writable child dirs remain owned by goclaw.
+  if [ -n "${GOCLAW_RUN_GROUP:-}" ]; then
+    chmod 0755 "$RUNTIME_DIR" 2>/dev/null || true
+  fi
   chown -R goclaw:goclaw "$RUNTIME_DIR/pip" "$RUNTIME_DIR/npm-global" "$RUNTIME_DIR/pip-cache" 2>/dev/null || true
 fi
 
@@ -103,6 +110,9 @@ fi
 # Run command with privilege drop (su-exec in Docker, direct otherwise).
 run_as_goclaw() {
   if command -v su-exec >/dev/null 2>&1 && [ "$(id -u)" = "0" ]; then
+    if [ -n "${GOCLAW_RUN_GROUP:-}" ]; then
+      exec su-exec "goclaw:${GOCLAW_RUN_GROUP}" "$@"
+    fi
     exec su-exec goclaw "$@"
   else
     exec "$@"

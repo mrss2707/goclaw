@@ -1,0 +1,233 @@
+# Public NAT deployment for https://io.supermeo.com:88.
+#
+# This file is intentionally self-contained instead of layering the optional
+# compose files, because those overlays publish internal ports by default.
+# Only the proxy service publishes a host port.
+#
+# Prerequisites:
+#   1. ./prepare-env.sh
+#   2. Fill .env secrets and set GOCLAW_ALLOWED_ORIGINS=https://io.supermeo.com:88
+#   3. Put TLS files in deploy/certs/io.supermeo.com.crt and
+#      deploy/certs/io.supermeo.com.key
+#   4. docker build -t goclaw-sandbox:bookworm-slim -f Dockerfile.sandbox .
+#   5. Optional Claude CLI: set ENABLE_CLAUDE_CLI=true and add the host
+#      credentials mount from docker-compose.claude-cli.yml.
+#
+# Start:
+#   docker compose -f docker-compose.public.yml up -d --build
+#   docker compose -f docker-compose.public.yml --profile maintenance run --rm upgrade
+
+name: goclaw-public
+
+services:
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "${PUBLIC_HTTPS_PORT:-88}:443"
+    volumes:
+      - ./deploy/nginx/goclaw-public.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
+    depends_on:
+      goclaw:
+        condition: service_healthy
+    networks:
+      - goclaw-net
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -qO- https://127.0.0.1/health >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  goclaw:
+    image: goclaw:public
+    build:
+      context: ${GOCLAW_DIR:-.}
+      dockerfile: Dockerfile
+      args:
+        ENABLE_EMBEDUI: "true"
+        ENABLE_PYTHON: "true"
+        ENABLE_REDIS: "true"
+        ENABLE_OTEL: "true"
+        ENABLE_SANDBOX: "true"
+        ENABLE_CLAUDE_CLI: "${ENABLE_CLAUDE_CLI:-false}"
+        ENABLE_FULL_SKILLS: "${ENABLE_FULL_SKILLS:-false}"
+        VERSION: "${GOCLAW_VERSION:-dev}"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      GOCLAW_HOST: 0.0.0.0
+      GOCLAW_PORT: "18790"
+      GOCLAW_CONFIG: /app/data/config.json
+      GOCLAW_GATEWAY_TOKEN: ${GOCLAW_GATEWAY_TOKEN:?set GOCLAW_GATEWAY_TOKEN in .env}
+      GOCLAW_ENCRYPTION_KEY: ${GOCLAW_ENCRYPTION_KEY:?set GOCLAW_ENCRYPTION_KEY in .env}
+      GOCLAW_ALLOWED_ORIGINS: ${GOCLAW_ALLOWED_ORIGINS:-https://io.supermeo.com:88}
+      GOCLAW_POSTGRES_DSN: postgres://${POSTGRES_USER:-goclaw}:${POSTGRES_PASSWORD_DSN:?set POSTGRES_PASSWORD_DSN in .env}@postgres:5432/${POSTGRES_DB:-goclaw}?sslmode=disable
+      GOCLAW_REDIS_DSN: redis://redis:6379/0
+      GOCLAW_BROWSER_REMOTE_URL: ws://chrome:9222
+      GOCLAW_TELEMETRY_ENABLED: "true"
+      GOCLAW_TELEMETRY_ENDPOINT: jaeger:4317
+      GOCLAW_TELEMETRY_PROTOCOL: grpc
+      GOCLAW_TELEMETRY_INSECURE: "true"
+      GOCLAW_TELEMETRY_SERVICE_NAME: goclaw-gateway
+      GOCLAW_SKILLS_DIR: /app/data/skills
+      GOCLAW_SANDBOX_MODE: all
+      GOCLAW_SANDBOX_IMAGE: goclaw-sandbox:bookworm-slim
+      GOCLAW_SANDBOX_WORKSPACE_ACCESS: rw
+      GOCLAW_SANDBOX_SCOPE: session
+      GOCLAW_SANDBOX_MEMORY_MB: "512"
+      GOCLAW_SANDBOX_CPUS: "1.0"
+      GOCLAW_SANDBOX_TIMEOUT_SEC: "300"
+      GOCLAW_SANDBOX_NETWORK: "false"
+      GOCLAW_RUN_GROUP: root
+      GOCLAW_TRACE_VERBOSE: ${GOCLAW_TRACE_VERBOSE:-0}
+    volumes:
+      - goclaw-data:/app/data
+      - goclaw-workspace:/app/workspace
+      - goclaw-skills:/app/skills
+      - goclaw-workspace:/app/.goclaw
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      chrome:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    networks:
+      - goclaw-net
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: []
+    cap_add:
+      - NET_BIND_SERVICE
+    group_add:
+      - ${DOCKER_GID:-0}
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "2.0"
+          pids: 200
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:18790/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-goclaw}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-goclaw}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    networks:
+      - goclaw-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-goclaw} -d ${POSTGRES_DB:-goclaw}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - goclaw-net
+    restart: unless-stopped
+
+  chrome:
+    image: zenika/alpine-chrome:124
+    command:
+      - --no-sandbox
+      - --remote-debugging-address=0.0.0.0
+      - --remote-debugging-port=9222
+      - --remote-allow-origins=*
+      - --disable-gpu
+      - --disable-dev-shm-usage
+    shm_size: 2gb
+    networks:
+      - goclaw-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9222/json/version >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.68.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - goclaw-net
+    restart: unless-stopped
+
+  upgrade:
+    profiles:
+      - maintenance
+    image: goclaw:public
+    build:
+      context: ${GOCLAW_DIR:-.}
+      dockerfile: Dockerfile
+      args:
+        ENABLE_EMBEDUI: "true"
+        ENABLE_PYTHON: "true"
+        ENABLE_REDIS: "true"
+        ENABLE_OTEL: "true"
+        ENABLE_SANDBOX: "true"
+        ENABLE_CLAUDE_CLI: "${ENABLE_CLAUDE_CLI:-false}"
+        ENABLE_FULL_SKILLS: "${ENABLE_FULL_SKILLS:-false}"
+        VERSION: "${GOCLAW_VERSION:-dev}"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      GOCLAW_POSTGRES_DSN: postgres://${POSTGRES_USER:-goclaw}:${POSTGRES_PASSWORD_DSN:?set POSTGRES_PASSWORD_DSN in .env}@postgres:5432/${POSTGRES_DB:-goclaw}?sslmode=disable
+      GOCLAW_CONFIG: /app/data/config.json
+      GOCLAW_MIGRATIONS_DIR: /app/migrations
+      GOCLAW_ENCRYPTION_KEY: ${GOCLAW_ENCRYPTION_KEY:?set GOCLAW_ENCRYPTION_KEY in .env}
+    volumes:
+      - goclaw-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - goclaw-net
+    entrypoint: ["/app/goclaw"]
+    command: ["upgrade"]
+    restart: "no"
+
+volumes:
+  goclaw-data:
+  goclaw-workspace:
+  goclaw-skills:
+  postgres-data:
+  redis-data:
+
+networks:
+  goclaw-net:
+    name: goclaw-public-net
+    driver: bridge

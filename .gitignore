@@ -16,6 +16,8 @@ pkg-helper
 # Environment
 .env*
 !.env.example
+deploy/certs/*.crt
+deploy/certs/*.key
 
 app
 browser-poc

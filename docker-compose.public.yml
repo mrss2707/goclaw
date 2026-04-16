@@ -17,10 +17,11 @@
 #   docker compose -f docker-compose.public.yml up -d --build
 #   docker compose -f docker-compose.public.yml --profile maintenance run --rm upgrade
 
-name: goclaw-public
+name: goclaw
 
 services:
   proxy:
+    container_name: proxy
     image: nginx:1.27-alpine
     ports:
       - "${PUBLIC_HTTPS_PORT:-88}:443"
@@ -42,6 +43,7 @@ services:
       retries: 3
 
   goclaw:
+    container_name: app
     image: goclaw:public
     build:
       context: ${GOCLAW_DIR:-.}
@@ -128,6 +130,7 @@ services:
       retries: 3
 
   postgres:
+    container_name: postgres
     image: pgvector/pgvector:pg18
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-goclaw}
@@ -145,6 +148,7 @@ services:
       retries: 10
 
   redis:
+    container_name: redis
     image: redis:7-alpine
     command: redis-server --appendonly yes
     volumes:
@@ -154,6 +158,7 @@ services:
     restart: unless-stopped
 
   chrome:
+    container_name: chrome
     image: zenika/alpine-chrome:124
     command:
       - --no-sandbox
@@ -178,6 +183,7 @@ services:
           cpus: "2.0"
 
   jaeger:
+    container_name: jaeger
     image: jaegertracing/all-in-one:1.68.0
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
@@ -222,12 +228,22 @@ services:
 
 volumes:
   goclaw-data:
+    external: true
+    name: goclaw-public_goclaw-data
   goclaw-workspace:
+    external: true
+    name: goclaw-public_goclaw-workspace
   goclaw-skills:
+    external: true
+    name: goclaw-public_goclaw-skills
   postgres-data:
+    external: true
+    name: goclaw-public_postgres-data
   redis-data:
+    external: true
+    name: goclaw-public_redis-data
 
 networks:
   goclaw-net:
-    name: goclaw-public-net
+    name: goclaw-net
     driver: bridge

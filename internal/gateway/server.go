@@ -75,6 +75,20 @@ type Server struct {
 	// so test servers don't share state. Read by RPC methods that need to
 	// advertise URLs back to external systems (e.g. Bitrix24 install link).
 	publicURLSnapshot *PublicURLSnapshot
+
+	UserAuth UserAuthenticator
+}
+
+type UserAuthenticator interface {
+	Authenticate(ctx context.Context, token string) (*UserAuthIdentity, error)
+}
+
+type UserAuthIdentity struct {
+	UserID   uuid.UUID
+	TenantID uuid.UUID
+	Role     string
+	Locale   string
+	Email    string
 }
 
 // SetPostTurnProcessor sets the post-turn processor for team task dispatch in HTTP API handlers.
@@ -668,6 +682,12 @@ func (s *Server) SetDocsHandler(h *httpapi.DocsHandler) { s.handlers = append(s.
 
 // SetEditionHandler sets the edition info handler.
 func (s *Server) SetEditionHandler(h *httpapi.EditionHandler) { s.handlers = append(s.handlers, h) }
+
+func (s *Server) SetUserAuthHandler(h *httpapi.UserAuthHandler) { s.handlers = append(s.handlers, h) }
+
+func (s *Server) SetGoogleOAuth2Handler(h *httpapi.GoogleOAuth2Handler) { s.handlers = append(s.handlers, h) }
+
+func (s *Server) SetEmailVerifyHandler(h *httpapi.EmailVerifyHandler) { s.handlers = append(s.handlers, h) }
 
 // SetAgentStore sets the agent store for context injection in tools_invoke.
 func (s *Server) SetAgentStore(as store.AgentStore) { s.agentStore = as }

@@ -143,6 +143,21 @@ func (r *MethodRouter) handleConnect(ctx context.Context, client *Client, req *p
 
 	configToken := r.server.cfg.Gateway.Token
 
+	// Path 0: Multi-user auth (JWT)
+	if r.server.UserAuth != nil && params.Token != "" {
+		if identity, err := r.server.UserAuth.Authenticate(ctx, params.Token); err == nil {
+			client.authenticated = true
+			client.userID = identity.UserID.String()
+			client.tenantID = identity.TenantID
+			client.role = permissions.Role(identity.Role)
+			if identity.Locale != "" {
+				client.locale = identity.Locale
+			}
+			r.sendConnectResponse(ctx, client, req.ID)
+			return
+		}
+	}
+
 	// Path 1: Valid gateway token → admin (constant-time comparison)
 	if configToken != "" && subtle.ConstantTimeCompare([]byte(params.Token), []byte(configToken)) == 1 {
 		client.role = permissions.RoleAdmin

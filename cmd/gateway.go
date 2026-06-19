@@ -50,6 +50,8 @@ import (
 	usagecaps "github.com/nextlevelbuilder/goclaw/internal/usage/caps"
 	"github.com/nextlevelbuilder/goclaw/internal/vault"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
+	"github.com/nextlevelbuilder/goclaw/supermeo/bridge"
+	"github.com/nextlevelbuilder/goclaw/supermeo/userauth"
 
 	// Register workstation backend factories via init().
 	_ "github.com/nextlevelbuilder/goclaw/internal/workstation/backends"
@@ -343,6 +345,67 @@ func runGateway() {
 	server.SetPairingService(pgStores.Pairing)
 	server.SetMessageBus(msgBus)
 	server.SetOAuthHandler(httpapi.NewOAuthHandler(pgStores.Providers, pgStores.ConfigSecrets, providerRegistry, msgBus))
+
+	// Multi-user auth: enable when JWT secret is configured and user stores are available.
+	if jwtSecret := os.Getenv("GOCLAW_JWT_SECRET"); jwtSecret != "" && pgStores.Users != nil && pgStores.Tenants != nil {
+		jwtSvc := userauth.NewJWTService(jwtSecret)
+		mapper := userauth.NewUserTenantMapper(pgStores.Tenants)
+		rateLimiter := userauth.NewAuthRateLimiter()
+		authenticator := bridge.NewDefaultUserAuthenticator(pgStores.Users, jwtSvc, mapper)
+		server.UserAuth = authenticator
+
+		userAuthHandler := httpapi.NewUserAuthHandler(pgStores.Users, jwtSvc, mapper, rateLimiter)
+		server.SetUserAuthHandler(userAuthHandler)
+
+		if pgStores.UserProviders != nil {
+			upm := methods.NewUserProviderMethods(pgStores.Users, pgStores.UserProviders)
+			upm.Register(server.Router())
+		}
+		slog.Info("multi-user auth enabled")
+
+		// Google OAuth2: enable when client ID/secret are configured.
+		if googleClientID := os.Getenv("GOOGLE_CLIENT_ID"); googleClientID != "" {
+			googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+			googleRedirectURL := os.Getenv("GOOGLE_REDIRECT_URL")
+			if googleRedirectURL == "" {
+				googleRedirectURL = "http://localhost:18790/v1/auth/google/callback"
+			}
+			if googleClientSecret != "" {
+				googleCfg := &userauth.GoogleOAuth2Config{
+					ClientID:     googleClientID,
+					ClientSecret: googleClientSecret,
+					RedirectURL:  googleRedirectURL,
+				}
+				googleOAuth := userauth.NewGoogleOAuth2Handler(googleCfg)
+				googleStore := userauth.NewGoogleStore(pgStores.Users)
+				googleHandler := httpapi.NewGoogleOAuth2Handler(googleOAuth, googleStore, pgStores.Users, jwtSvc, mapper)
+				server.SetGoogleOAuth2Handler(googleHandler)
+				slog.Info("Google OAuth2 sign-in enabled")
+			}
+		}
+
+		// SMTP email verification: enable when SMTP config is available.
+		if smtpHost := os.Getenv("SMTP_HOST"); smtpHost != "" {
+			smtpPort := os.Getenv("SMTP_PORT")
+			if smtpPort == "" {
+				smtpPort = "587"
+			}
+			smtpCfg := userauth.SMTPConfig{
+				Host:     smtpHost,
+				Port:     smtpPort,
+				Username: os.Getenv("SMTP_USERNAME"),
+				Password: os.Getenv("SMTP_PASSWORD"),
+				FromName: os.Getenv("SMTP_FROM_NAME"),
+			}
+			if smtpCfg.Username != "" && smtpCfg.Password != "" {
+				smtpClient := userauth.NewSMTPClient(smtpCfg)
+				verifier := userauth.NewEmailVerifier(pgStores.Users, smtpClient, pgStores.UserSessions, jwtSvc, mapper, rateLimiter)
+				verifyHandler := httpapi.NewEmailVerifyHandler(verifier, mapper, pgStores.Users, jwtSvc)
+				server.SetEmailVerifyHandler(verifyHandler)
+				slog.Info("SMTP email verification enabled")
+			}
+		}
+	}
 
 	// contextFileInterceptor is created inside wireExtras.
 	// Declared here so it can be passed to registerAllMethods → AgentsMethods

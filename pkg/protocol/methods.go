@@ -239,3 +239,11 @@ const (
 	MethodBitrixPortalsGetInstallURL = "bitrix.portals.get_install_url"
 	MethodBitrixPortalsDelete        = "bitrix.portals.delete"
 )
+
+// User-owned LLM providers
+const (
+	MethodUserProvidersList   = "user.providers.list"
+	MethodUserProvidersCreate = "user.providers.create"
+	MethodUserProvidersUpdate = "user.providers.update"
+	MethodUserProvidersDelete = "user.providers.delete"
+)

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,14 +49,65 @@ type Config struct {
 	Providers ProvidersConfig `json:"providers"`
 	Gateway   GatewayConfig   `json:"gateway"`
 	Tools     ToolsConfig     `json:"tools"`
+	Skills    SkillsConfig    `json:"skills"`
 	Sessions  SessionsConfig  `json:"sessions"`
 	Database  DatabaseConfig  `json:"database"`
 	Tts       TtsConfig       `json:"tts"`
+	Audio     *AudioConfig    `json:"audio,omitempty"` // optional STT/Music defaults (Phase 3/4)
 	Cron      CronConfig      `json:"cron"`
 	Telemetry TelemetryConfig `json:"telemetry"`
 	Tailscale TailscaleConfig `json:"tailscale"`
 	Bindings  []AgentBinding  `json:"bindings,omitempty"`
+	Hooks     HooksConfig     `json:"hooks"`
+	Packages  PackagesConfig  `json:"packages"` // runtime package mgmt (GitHub updater)
 	mu        sync.RWMutex
+}
+
+// PackagesConfig tunes the runtime package update flow (Phase 1: GitHub
+// binaries). GitHubToken is RESERVED for Phase 2 (authenticated rate-limit
+// bump); currently unwired.
+//
+// UpdatesCheckTTL controls how stale the updates cache can get before a
+// GET /v1/packages/updates triggers a background refresh. Encoded as
+// human-readable string (e.g. "1h", "30m") parsed via time.ParseDuration;
+// empty string → default 1h.
+//
+// ScratchDir is the tmp workspace used by the update executor for download
+// + extract + staging before atomic swap. Empty or unusable values fall back to
+// "{runtimeDir}/tmp"; operators MAY set an explicit writable path.
+type PackagesConfig struct {
+	GitHubToken     string `json:"github_token,omitempty"`      // Phase 2 stub
+	UpdatesCheckTTL string `json:"updates_check_ttl,omitempty"` // e.g. "1h"
+	ScratchDir      string `json:"scratch_dir,omitempty"`       // abs path
+}
+
+// UpdatesCheckTTLDuration parses UpdatesCheckTTL returning 1h on empty/invalid.
+func (p PackagesConfig) UpdatesCheckTTLDuration() time.Duration {
+	if p.UpdatesCheckTTL == "" {
+		return time.Hour
+	}
+	d, err := time.ParseDuration(p.UpdatesCheckTTL)
+	if err != nil || d <= 0 {
+		return time.Hour
+	}
+	return d
+}
+
+// HooksConfig tunes the script-hook runtime caps. All zero-valued fields fall
+// back to the handlers package defaults (see handlers.NewScriptHandler).
+//
+// ScriptConcurrency bounds the total concurrent script executions per process.
+// ScriptPerTenantConcurrency bounds a single tenant's share of that pool so a
+// runaway tenant cannot starve global slots. ScriptCacheSize caps the LRU of
+// compiled goja programs keyed by (hookID, version).
+//
+// BuiltinDisable names builtin hook IDs (from Phase 04's builtins.yaml) that
+// the operator wants force-disabled at startup — per-deployment escape hatch.
+type HooksConfig struct {
+	ScriptConcurrency          int      `json:"script_concurrency,omitempty"`
+	ScriptPerTenantConcurrency int      `json:"script_per_tenant_concurrency,omitempty"`
+	ScriptCacheSize            int      `json:"script_cache_size,omitempty"`
+	BuiltinDisable             []string `json:"builtin_disable,omitempty"`
 }
 
 // TailscaleConfig configures the optional Tailscale tsnet listener.
@@ -78,7 +131,82 @@ type DatabaseConfig struct {
 
 // SkillsConfig configures the skills storage system.
 type SkillsConfig struct {
-	StorageDir string `json:"storage_dir,omitempty"` // directory for skill content (default: dataDir/skills-store/)
+	StorageDir      string                  `json:"storage_dir,omitempty"`        // directory for skill content (default: dataDir/skills-store/)
+	MaxUploadSizeMB int                     `json:"max_upload_size_mb,omitempty"` // per-file ZIP upload limit
+	SlashCommands   SkillSlashCommandConfig `json:"slash_commands"`
+}
+
+// SkillSlashCommandConfig controls explicit slash-command skill activation.
+type SkillSlashCommandConfig struct {
+	Enabled         *bool  `json:"enabled,omitempty"`
+	SuggestNotFound *bool  `json:"suggest_not_found,omitempty"`
+	PartialMatching bool   `json:"partial_matching,omitempty"`
+	Prefix          string `json:"prefix,omitempty"`
+}
+
+const (
+	DefaultSkillMaxUploadSizeMB = 20
+	MinSkillMaxUploadSizeMB     = 1
+	MaxSkillMaxUploadSizeMB     = 500
+
+	DefaultSkillSlashCommandPrefix = "/"
+
+	SkillMaxUploadSizeSystemConfigKey        = "skills.max_upload_size_mb"
+	SkillSlashCommandsEnabledSystemConfigKey = "skills.slash_commands.enabled"
+	SkillSlashSuggestNotFoundSystemConfigKey = "skills.slash_commands.suggest_not_found"
+	SkillSlashPartialMatchingSystemConfigKey = "skills.slash_commands.partial_matching"
+	SkillSlashCommandPrefixSystemConfigKey   = "skills.slash_commands.prefix"
+)
+
+func ClampSkillMaxUploadSizeMB(value int) int {
+	if value == 0 {
+		return DefaultSkillMaxUploadSizeMB
+	}
+	if value < MinSkillMaxUploadSizeMB {
+		return MinSkillMaxUploadSizeMB
+	}
+	if value > MaxSkillMaxUploadSizeMB {
+		return MaxSkillMaxUploadSizeMB
+	}
+	return value
+}
+
+func (c SkillsConfig) EffectiveMaxUploadSizeMB() int {
+	return ClampSkillMaxUploadSizeMB(c.MaxUploadSizeMB)
+}
+
+func (c SkillsConfig) EffectiveMaxUploadSizeBytes() int64 {
+	return int64(c.EffectiveMaxUploadSizeMB()) << 20
+}
+
+func (c SkillSlashCommandConfig) EffectiveEnabled() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
+func (c SkillSlashCommandConfig) EffectiveSuggestNotFound() bool {
+	if c.SuggestNotFound == nil {
+		return true
+	}
+	return *c.SuggestNotFound
+}
+
+func (c SkillSlashCommandConfig) EffectivePartialMatching() bool {
+	return c.PartialMatching
+}
+
+func (c SkillSlashCommandConfig) EffectivePrefix() string {
+	prefix := strings.TrimSpace(c.Prefix)
+	if prefix == "" {
+		return DefaultSkillSlashCommandPrefix
+	}
+	runes := []rune(prefix)
+	if len(runes) != 1 || runes[0] == ' ' || runes[0] == '\t' || runes[0] == '\n' || runes[0] == '\r' {
+		return DefaultSkillSlashCommandPrefix
+	}
+	return prefix
 }
 
 // AgentBinding maps a channel/peer pattern to a specific agent.
@@ -150,10 +278,15 @@ type MemoryFlushConfig struct {
 }
 
 // ContextPruningConfig configures in-memory context pruning of old tool results.
-// Matching TS src/agents/pi-extensions/context-pruning/settings.ts.
-// Mode "cache-ttl": prune when context exceeds softTrimRatio of context window.
+// Matches TS openclaw/src/agents/pi-hooks/context-pruning/settings.ts.
+//
+// Mode "" (default) or "off" → pruning disabled, zero overhead.
+// Mode "cache-ttl" → prune eligible tool results when ratio exceeds softTrimRatio,
+//
+//	gated by provider prompt-cache TTL (see PruneStage).
 type ContextPruningConfig struct {
-	Mode                 string                   `json:"mode,omitempty"`                 // "off" (default), "cache-ttl"
+	Mode                 string                   `json:"mode,omitempty"`                 // "" (default off), "off", "cache-ttl"
+	TTL                  string                   `json:"ttl,omitempty"`                  // cache TTL gate duration (default "5m"), Go duration string e.g. "5m", "30s"
 	KeepLastAssistants   int                      `json:"keepLastAssistants,omitempty"`   // protect last N assistant msgs (default 3)
 	SoftTrimRatio        float64                  `json:"softTrimRatio,omitempty"`        // start soft trim at this % of window (default 0.3)
 	HardClearRatio       float64                  `json:"hardClearRatio,omitempty"`       // start hard clear at this % (default 0.5)
@@ -330,13 +463,13 @@ type ModelPricing struct {
 // When enabled, spans are exported to an OTLP-compatible backend (Jaeger, Tempo, Datadog, etc.)
 // in addition to PostgreSQL storage.
 type TelemetryConfig struct {
-	Enabled      bool                       `json:"enabled,omitempty"`       // enable OTLP export (default false)
-	Endpoint     string                     `json:"endpoint,omitempty"`      // OTLP endpoint (e.g. "localhost:4317", "https://otel.example.com:4318")
-	Protocol     string                     `json:"protocol,omitempty"`      // "grpc" (default) or "http"
-	Insecure     bool                       `json:"insecure,omitempty"`      // skip TLS verification (default false, set true for local dev)
-	ServiceName  string                     `json:"service_name,omitempty"`  // OTEL service name (default "goclaw-gateway")
-	Headers      map[string]string          `json:"headers,omitempty"`       // extra headers (e.g. auth tokens for cloud backends)
-	ModelPricing map[string]*ModelPricing    `json:"model_pricing,omitempty"` // cost per model, key = "provider/model" or just "model"
+	Enabled      bool                     `json:"enabled,omitempty"`       // enable OTLP export (default false)
+	Endpoint     string                   `json:"endpoint,omitempty"`      // OTLP endpoint (e.g. "localhost:4317", "https://otel.example.com:4318")
+	Protocol     string                   `json:"protocol,omitempty"`      // "grpc" (default) or "http"
+	Insecure     bool                     `json:"insecure,omitempty"`      // skip TLS verification (default false, set true for local dev)
+	ServiceName  string                   `json:"service_name,omitempty"`  // OTEL service name (default "goclaw-gateway")
+	Headers      map[string]string        `json:"headers,omitempty"`       // extra headers (e.g. auth tokens for cloud backends)
+	ModelPricing map[string]*ModelPricing `json:"model_pricing,omitempty"` // cost per model, key = "provider/model" or just "model"
 }
 
 // CronConfig configures the cron job system.
@@ -423,6 +556,7 @@ func (c *Config) ReplaceFrom(src *Config) {
 	c.Providers = src.Providers
 	c.Gateway = src.Gateway
 	c.Tools = src.Tools
+	c.Skills = src.Skills
 	c.Sessions = src.Sessions
 	c.Database = src.Database
 	c.Tts = src.Tts
@@ -430,6 +564,36 @@ func (c *Config) ReplaceFrom(src *Config) {
 	c.Telemetry = src.Telemetry
 	c.Tailscale = src.Tailscale
 	c.Bindings = src.Bindings
+}
+
+// Clone returns a deep copy of the config while holding the read lock.
+func (c *Config) Clone() *Config {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	data, err := json.Marshal(c)
+	if err != nil {
+		return &Config{}
+	}
+	cp := Default()
+	if err := json.Unmarshal(data, cp); err != nil {
+		return &Config{}
+	}
+	return cp
+}
+
+// ShellDenyGroupsSnapshot returns a copy of the current global shell deny-group
+// overrides. Callers can safely resolve patterns without racing config reloads.
+func (c *Config) ShellDenyGroupsSnapshot() map[string]bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if len(c.Tools.ShellDenyGroups) == 0 {
+		return nil
+	}
+	groups := make(map[string]bool, len(c.Tools.ShellDenyGroups))
+	maps.Copy(groups, c.Tools.ShellDenyGroups)
+	return groups
 }
 
 // IdentityConfig defines agent persona / display identity.

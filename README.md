@@ -184,6 +184,16 @@ make logs              # Tail logs (goclaw service)
 make reset             # Wipe volumes and rebuild from scratch
 ```
 
+**Operator CLI:**
+
+The main `goclaw` binary can also inspect local or remote gateways:
+
+```bash
+goclaw traces list --status error
+goclaw traces get <trace-id> -o json
+goclaw --server https://goclaw.example.com --token "$GOCLAW_GATEWAY_TOKEN" traces follow --session <session-key>
+```
+
 **Optional services** — enable with `WITH_*` flags:
 
 | Flag | Service | What it does |
@@ -291,6 +301,30 @@ Typed domain events power the consolidation pipeline — session summaries, know
 | **Automation** | `cron`, `heartbeat`, `sessions_*` | Scheduling + session management |
 
 > Full tool reference at [docs.goclaw.sh](https://docs.goclaw.sh/#custom-tools)
+
+## Webhook API
+
+Trigger agents or send channel messages from external systems without the gateway token.
+
+```bash
+# Bearer auth — sync LLM call
+curl -X POST https://example.com/v1/webhooks/llm \
+  -H "Authorization: Bearer wh_..." \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Summarize today metrics","mode":"sync"}'
+
+# HMAC auth — sign with hmac_signing_key from create response
+TS=$(date +%s); BODY='{"input":"hi","mode":"sync"}'
+SIG=$(echo -n "${TS}.${BODY}" | openssl dgst -sha256 -mac HMAC \
+      -macopt "hexkey:${WEBHOOK_HMAC_KEY}" | awk '{print $2}')
+curl -X POST https://example.com/v1/webhooks/llm \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Id: ${WEBHOOK_ID}" \
+  -H "X-GoClaw-Signature: t=${TS},v1=${SIG}" \
+  -d "$BODY"
+```
+
+See **[docs/webhooks.md](docs/webhooks.md)** for the full reference: auth, async callbacks, retry schedule, HMAC examples, channel matrix.
 
 ## Documentation
 

@@ -18,6 +18,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tasks"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
+	"github.com/nextlevelbuilder/goclaw/internal/webhooks"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
 
@@ -84,6 +85,17 @@ func (d *gatewayDeps) runLifecycle(
 		deps.webFetchTool.UpdatePolicy(updatedCfg.Tools.WebFetch.Policy, updatedCfg.Tools.WebFetch.AllowedDomains, updatedCfg.Tools.WebFetch.BlockedDomains)
 	})
 
+	// Reload global shell deny-group toggles on config changes via pub/sub
+	// so /config edits apply without a process restart.
+	subscribeShellDenyGroupsReload(d.msgBus, d.toolsReg)
+	var providerStore store.ProviderStore
+	var mcpStore store.MCPServerStore
+	if d.pgStores != nil {
+		providerStore = d.pgStores.Providers
+		mcpStore = d.pgStores.MCP
+	}
+	subscribeProviderShellDenyGroupsReload(d.msgBus, d.providerRegistry, providerStore, mcpStore)
+
 	// Reload TTS providers on config changes via pub/sub.
 	d.msgBus.Subscribe("tts-config-reload", func(evt bus.Event) {
 		if evt.Name != bus.TopicConfigChanged {
@@ -94,7 +106,9 @@ func (d *gatewayDeps) runLifecycle(
 			return
 		}
 		if d.pgStores.ConfigSecrets != nil {
-			if secrets, err := d.pgStores.ConfigSecrets.GetAll(context.Background()); err == nil && len(secrets) > 0 {
+			// Use master tenant context to load global TTS secrets
+			masterCtx := store.WithTenantID(context.Background(), store.MasterTenantID)
+			if secrets, err := d.pgStores.ConfigSecrets.GetAll(masterCtx); err == nil && len(secrets) > 0 {
 				updatedCfg.ApplyDBSecrets(secrets)
 			}
 		}
@@ -103,6 +117,9 @@ func (d *gatewayDeps) runLifecycle(
 			return
 		}
 		deps.ttsTool.UpdateManager(newMgr)
+		if d.ttsHandler != nil {
+			d.ttsHandler.UpdateManager(newMgr)
+		}
 		slog.Info("tts config reloaded", "provider", newMgr.PrimaryProvider(), "auto", string(newMgr.AutoMode()))
 	})
 
@@ -130,7 +147,39 @@ func (d *gatewayDeps) runLifecycle(
 		d.channelMgr.SetContactCollector(contactCollector)
 	}
 
-	go consumeInboundMessages(ctx, d.msgBus, d.agentRouter, d.cfg, deps.sched, d.channelMgr, deps.consumerTeamStore, deps.quotaChecker, d.pgStores.Sessions, d.pgStores.Agents, contactCollector, deps.postTurn, deps.subagentMgr)
+	go consumeInboundMessages(ctx, d.msgBus, d.agentRouter, d.cfg, deps.sched, d.channelMgr, deps.consumerTeamStore, deps.quotaChecker, d.pgStores.Sessions, d.pgStores.Agents, contactCollector, deps.postTurn, deps.subagentMgr, d.usageCapSvc, d.providerRegistry)
+
+	// Webhook callback worker — delivers async webhook_calls rows to receiver callback_url.
+	// Runs in both editions: Standard (PG, concurrency=4) and Lite (SQLite, concurrency=1).
+	// sqliteonly: single callback worker — SQLite lacks SKIP LOCKED; BEGIN IMMEDIATE serializes.
+	var webhookWorkerCancel context.CancelFunc
+	if d.pgStores != nil &&
+		d.pgStores.WebhookCalls != nil &&
+		d.pgStores.Webhooks != nil &&
+		d.pgStores.Tenants != nil &&
+		d.agentRouter != nil {
+		workerConcurrency := 4
+		if edition.Current().IsLimited() {
+			// sqliteonly: single callback worker — SQLite lacks SKIP LOCKED; BEGIN IMMEDIATE serializes.
+			workerConcurrency = 1
+		}
+		ww := webhooks.NewWebhookWorker(
+			d.pgStores.WebhookCalls,
+			d.pgStores.Webhooks,
+			d.pgStores.Tenants,
+			d.agentRouter,
+			nil, // limiter: created internally with default per-tenant cap (4)
+			webhooks.WorkerConfig{
+				WorkerConcurrency:    workerConcurrency,
+				PerTenantConcurrency: 4,
+			},
+		)
+		// K6: decrypt raw secret for outbound HMAC signing using the same key as inbound verify.
+		ww.SetEncKey(os.Getenv("GOCLAW_ENCRYPTION_KEY"))
+		var workerCtx context.Context
+		workerCtx, webhookWorkerCancel = context.WithCancel(ctx)
+		go ww.Run(workerCtx)
+	}
 
 	// Task recovery ticker: re-dispatches stale/pending team tasks on startup and periodically.
 	var taskTicker *tasks.TaskTicker
@@ -152,6 +201,11 @@ func (d *gatewayDeps) runLifecycle(
 		deps.heartbeatTicker.Stop()
 		if taskTicker != nil {
 			taskTicker.Stop()
+		}
+
+		// Stop webhook callback worker — signals Run() to drain in-flight and exit.
+		if webhookWorkerCancel != nil {
+			webhookWorkerCancel()
 		}
 
 		// Drain audit log queue before closing DB

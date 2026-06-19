@@ -2,6 +2,7 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { ChevronDownIcon, CheckIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { usePortalDropdownClose } from "@/hooks/use-portal-dropdown-close";
 
 export interface ComboboxOption {
   value: string;
@@ -23,6 +24,7 @@ interface ComboboxProps {
   allowCustom?: boolean;
   /** Label for the custom value hint (default: "Use custom:"). */
   customLabel?: string;
+  disabled?: boolean;
 }
 
 export function Combobox({
@@ -35,6 +37,7 @@ export function Combobox({
   portalContainer,
   allowCustom,
   customLabel = "Use custom:",
+  disabled,
 }: ComboboxProps) {
   const [open, setOpen] = React.useState(false);
   const [search, setSearch] = React.useState("");
@@ -49,6 +52,13 @@ export function Combobox({
   const dropdownRef = React.useRef<HTMLDivElement>(null);
   const [dropdownStyle, setDropdownStyle] = React.useState<React.CSSProperties>({});
 
+  React.useEffect(() => {
+    if (!disabled) return;
+    setOpen(false);
+    setInputDirty(false);
+    inputDirtyRef.current = false;
+  }, [disabled]);
+
   // Sync search text when value changes externally — show label if available
   React.useEffect(() => {
     // After handleSelect, skip sync while value is still the selected value.
@@ -59,23 +69,16 @@ export function Combobox({
     setSearch(match?.label || value);
   }, [value, options]);
 
-  // Close on outside click
-  React.useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        containerRef.current && !containerRef.current.contains(target) &&
-        (!dropdownRef.current || !dropdownRef.current.contains(target))
-      ) {
-        setOpen(false);
-        setInputDirty(false);
-        inputDirtyRef.current = false;
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
+  // Close on outside interaction (pointer/touch-aware, ignores in-list scroll)
+  usePortalDropdownClose({
+    open,
+    onClose: () => {
+      setOpen(false);
+      setInputDirty(false);
+      inputDirtyRef.current = false;
+    },
+    ignore: [containerRef, dropdownRef],
+  });
 
   // Resolve the actual portal target: explicit prop > closest dialog content > document.body
   const resolvedPortal = React.useMemo(() => {
@@ -169,6 +172,7 @@ export function Combobox({
   }, [options, search]);
 
   const handleSelect = (val: string) => {
+    if (disabled) return;
     selectedValueRef.current = val; // suppress value-sync until user types again
     onChange(val);
     onSelect?.(val);
@@ -180,6 +184,7 @@ export function Combobox({
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (disabled) return;
     const val = e.target.value;
     selectedValueRef.current = null; // user is typing — resume normal value sync
     setSearch(val);
@@ -192,6 +197,7 @@ export function Combobox({
   };
 
   const handleFocus = (e: React.FocusEvent) => {
+    if (disabled) return;
     // Only open dropdown on user-initiated focus (click/tab), not programmatic.
     // relatedTarget is null for programmatic focus or first tab into page.
     if (!e.relatedTarget && document.hasFocus()) return;
@@ -243,13 +249,15 @@ export function Combobox({
         value={search}
         onChange={handleInputChange}
         onFocus={handleFocus}
+        disabled={disabled}
         placeholder={placeholder}
         className={cn(
           "border-input placeholder:text-muted-foreground dark:bg-input/30 h-9 w-full rounded-md border bg-transparent px-3 py-1 pr-8 text-base md:text-sm shadow-xs outline-none transition-[color,box-shadow]",
           "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-1",
+          disabled && "cursor-not-allowed opacity-50",
         )}
       />
-      {options.length > 0 && (
+      {options.length > 0 && !disabled && (
         <ChevronDownIcon
           className="text-muted-foreground absolute top-1/2 right-2.5 size-4 -translate-y-1/2 cursor-pointer opacity-50"
           onClick={() => setOpen(!open)}

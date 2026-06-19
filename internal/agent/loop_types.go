@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/eventbus"
+	"github.com/nextlevelbuilder/goclaw/internal/hooks"
 	mcpbridge "github.com/nextlevelbuilder/goclaw/internal/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/media"
 	"github.com/nextlevelbuilder/goclaw/internal/memory"
@@ -21,6 +23,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/tokencount"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 	"github.com/nextlevelbuilder/goclaw/internal/tracing"
+	usagecaps "github.com/nextlevelbuilder/goclaw/internal/usage/caps"
 )
 
 // bootstrapAutoCleanupTurns is the number of user messages after which
@@ -80,8 +83,11 @@ type Loop struct {
 	// store.WithAgentID. See docs/agent-identity-conventions.md.
 	agentUUID uuid.UUID
 	tenantID  uuid.UUID // agent's owning tenant
-	agentType        string    // "open" or "predefined"
-	defaultTimezone  string    // system default timezone for bootstrap pre-fill
+	// agentOtherConfig is a defensive byte copy of agents.other_config JSONB.
+	// Copied once at Loop construction; used to build AgentAudioSnapshot at tool dispatch.
+	agentOtherConfig json.RawMessage
+	agentType        string // "open" or "predefined"
+	defaultTimezone  string // system default timezone for bootstrap pre-fill
 	provider         providers.Provider
 	model            string
 	modelRegistry    providers.ModelRegistry // resolves per-model context window at run time (nil = use static contextWindow)
@@ -103,10 +109,11 @@ type Loop struct {
 	// Memory flush runs if callback != nil; auto-inject runs if AutoInjector != nil.
 	autoInjector memory.AutoInjector // v3 L0 memory auto-inject (nil = disabled)
 
-	eventPub        bus.EventPublisher // currently unused by Loop; kept for future use
+	eventPub        bus.EventPublisher      // currently unused by Loop; kept for future use
 	domainBus       eventbus.DomainEventBus // V3 domain event bus for consolidation pipeline
 	sessions        store.SessionStore
 	tools           tools.ToolExecutor
+	registry        *tools.Registry        // direct registry access for MergeToolGroup (per-Registry tool groups)
 	toolPolicy      *tools.PolicyEngine    // optional: filters tools sent to LLM
 	agentToolPolicy *config.ToolPolicySpec // per-agent tool policy from DB (nil = no restrictions)
 	activeRuns      atomic.Int32           // number of currently executing runs
@@ -115,11 +122,12 @@ type Loop struct {
 	summarizeMu sync.Map // sessionKey → *sync.Mutex
 
 	// Bootstrap/persona context (loaded at startup, injected into system prompt)
-	ownerIDs       []string
-	skillsLoader   *skills.Loader
-	skillAllowList []string // nil = all, [] = none, ["x","y"] = filter
-	hasMemory      bool
-	contextFiles   []bootstrap.ContextFile
+	ownerIDs           []string
+	skillsLoader       *skills.Loader
+	skillAllowList     []string // nil = all, [] = none, ["x","y"] = filter
+	skillSlashCommands config.SkillSlashCommandConfig
+	hasMemory          bool
+	contextFiles       []bootstrap.ContextFile
 
 	// Per-user profile + file seeding + dynamic context loading
 	ensureUserProfile EnsureUserProfileFunc // create/resolve user profile + workspace
@@ -131,10 +139,11 @@ type Loop struct {
 	userSetups        sync.Map            // userID → *userSetup (workspace + seeding state, per Loop instance)
 
 	// Per-user MCP tools: servers requiring user credentials get connected per-request.
-	mcpStore        store.MCPServerStore  // for credential lookup
-	mcpPool         *mcpbridge.Pool       // user-keyed connection pool
-	mcpUserCredSrvs []store.MCPAccessInfo // servers needing per-user creds
-	mcpUserTools    sync.Map              // userID → []tools.Tool (cached per-user tools)
+	mcpStore        store.MCPServerStore   // for credential lookup
+	mcpPool         *mcpbridge.Pool        // user-keyed connection pool
+	mcpUserCredSrvs []store.MCPAccessInfo  // servers needing per-user creds
+	mcpUserTools    sync.Map               // userID → []tools.Tool (cached per-user tools)
+	mcpGrantChecker mcpbridge.GrantChecker // runtime grant verification (nil = skip)
 
 	// Compaction config (memory flush settings)
 	compactionCfg *config.CompactionConfig
@@ -177,6 +186,7 @@ type Loop struct {
 	// Tenant-specific allowed paths beyond workspace (from system_configs['allowed_paths']).
 	// Filesystem tools (read_file, write_file, edit, list_files) check these at execution time.
 	tenantAllowedPaths []string
+	systemConfigs      store.SystemConfigStore
 
 	// Per-tenant disabled tools (tool name → true means excluded from LLM)
 	disabledTools map[string]bool
@@ -192,6 +202,14 @@ type Loop struct {
 
 	// Self-evolve: predefined agents can update SOUL.md through chat
 	selfEvolve bool
+
+	// allowImageGeneration: gate for native image_generation tool injection.
+	// Tri-level: provider supports it AND this flag is true AND request hasn't opted out.
+	// Defaults to true; set false via other_config.allow_image_generation = false.
+	allowImageGeneration bool
+
+	// TTS auto mode from config: "off", "always", "inbound", "tagged"
+	ttsAutoMode string
 
 	// Skill learning loop: when skillEvolve=true, the loop injects nudges reminding
 	// the agent to capture reusable patterns as skills via skill_manage.
@@ -224,19 +242,38 @@ type Loop struct {
 	// Budget enforcement: monthly spending limit in cents (0 = unlimited)
 	budgetMonthlyCents int
 	tracingStore       store.TracingStore
+	usageCaps          *usagecaps.Service
+	usageEvents        store.UsageEventStore
 
 	// Memory store for extractive memory fallback (writes directly when LLM flush fails)
 	memStore store.MemoryStore
 
 	// v3 orchestration mode (spawn/delegate/team) — controls tool visibility
-	orchMode          OrchestrationMode
-	delegateTargets   []DelegateTargetEntry // delegation targets for prompt injection
+	orchMode        OrchestrationMode
+	delegateTargets []DelegateTargetEntry // delegation targets for prompt injection
 
 	// v3 evolution metrics store (nil = disabled)
 	evolutionMetricsStore store.EvolutionMetricsStore
 
+	// Skill self-evolution metrics store (nil = disabled)
+	skillEvolutionStore store.SkillEvolutionStore
+	skillStore          store.SkillStore
+
 	// User identity resolver: maps channel contacts to merged tenant users for credential lookups.
 	userResolver UserIdentityResolver
+
+	// Per-session cache-touch timestamps for the cache-TTL pruning gate (Phase 06).
+	// Key: sessionKey (string), Value: time.Time of last prune mutation.
+	// sync.Map zero value is ready to use — no init required.
+	// Grows with distinct sessions; typical gateway has bounded session count.
+	// Note: in-memory only — timestamps reset on process restart (one extra prune
+	// per session on restart, then steady-state resumes).
+	cacheTouchBySession sync.Map
+
+	// hookDispatcher fires lifecycle hook events (Issue #875). Nil-safe: when
+	// nil the pipeline fast-path skips all hook overhead. Populated from
+	// LoopConfig.HookDispatcher during startup wiring.
+	hookDispatcher hooks.Dispatcher
 }
 
 // AgentEvent is emitted during agent execution for WS broadcasting.
@@ -254,6 +291,7 @@ type AgentEvent struct {
 	ParentAgentID string `json:"parentAgentId,omitempty"`
 
 	// Routing context (helps WS clients filter by user/channel/session)
+	SenderID   string `json:"senderId,omitempty"` // original acting user; differs from UserID in group chats
 	UserID     string `json:"userId,omitempty"`
 	Channel    string `json:"channel,omitempty"`
 	ChatID     string `json:"chatId,omitempty"`
@@ -291,6 +329,7 @@ type LoopConfig struct {
 
 	Bus             bus.EventPublisher
 	DomainBus       eventbus.DomainEventBus // V3 domain event bus for consolidation pipeline
+	HookDispatcher  hooks.Dispatcher        // lifecycle hook dispatcher (nil = noop)
 	Sessions        store.SessionStore
 	Tools           *tools.Registry
 	ToolPolicy      *tools.PolicyEngine    // optional: filters tools sent to LLM
@@ -298,11 +337,12 @@ type LoopConfig struct {
 	OnEvent         func(AgentEvent)
 
 	// Bootstrap/persona context
-	OwnerIDs       []string
-	SkillsLoader   *skills.Loader
-	SkillAllowList []string // nil = all, [] = none, ["x","y"] = filter
-	HasMemory      bool
-	ContextFiles   []bootstrap.ContextFile
+	OwnerIDs           []string
+	SkillsLoader       *skills.Loader
+	SkillAllowList     []string // nil = all, [] = none, ["x","y"] = filter
+	SkillSlashCommands config.SkillSlashCommandConfig
+	HasMemory          bool
+	ContextFiles       []bootstrap.ContextFile
 
 	// Compaction config
 	CompactionCfg *config.CompactionConfig
@@ -319,11 +359,12 @@ type LoopConfig struct {
 	ShellDenyGroups map[string]bool
 
 	// Agent UUID + tenant for context propagation to tools
-	AgentUUID   uuid.UUID
-	TenantID    uuid.UUID // agent's owning tenant — injected into execution context
-	AgentType   string    // "open" or "predefined"
-	DisplayName string    // human-readable agent display name (for runtime section)
-	IsTeamLead bool      // agent leads a team (from resolver detection)
+	AgentUUID        uuid.UUID
+	TenantID         uuid.UUID       // agent's owning tenant — injected into execution context
+	AgentOtherConfig json.RawMessage // raw other_config JSONB — copied defensively in NewLoop
+	AgentType        string          // "open" or "predefined"
+	DisplayName      string          // human-readable agent display name (for runtime section)
+	IsTeamLead       bool            // agent leads a team (from resolver detection)
 
 	// Per-user profile + file seeding + dynamic context loading
 	EnsureUserProfile EnsureUserProfileFunc // preferred: separate profile + workspace
@@ -350,6 +391,7 @@ type LoopConfig struct {
 
 	// Tenant-specific allowed paths beyond workspace (from system_configs['allowed_paths']).
 	TenantAllowedPaths []string
+	SystemConfigs      store.SystemConfigStore
 
 	// Per-tenant disabled tools (tool name → true means excluded)
 	DisabledTools map[string]bool
@@ -365,6 +407,14 @@ type LoopConfig struct {
 
 	// Self-evolve: predefined agents can update SOUL.md (style/tone) through chat
 	SelfEvolve bool
+
+	// AllowImageGeneration: whether the native image_generation tool may be attached.
+	// Defaults to true; set false to disable image generation for this agent.
+	AllowImageGeneration bool
+
+	// TTS auto mode from config: "off", "always", "inbound", "tagged"
+	// When "tagged", inject [[tts]] directive guidance into system prompt.
+	TTSAutoMode string
 
 	// Skill evolution: agent learning loop config (from other_config JSONB)
 	SkillEvolve        bool
@@ -391,21 +441,28 @@ type LoopConfig struct {
 	// Budget enforcement
 	BudgetMonthlyCents int
 	TracingStore       store.TracingStore
+	UsageCaps          *usagecaps.Service
+	UsageEvents        store.UsageEventStore
 
 	// Memory store for extractive memory fallback (writes directly when LLM flush fails)
 	MemoryStore store.MemoryStore
 
 	// Per-user MCP tools (servers requiring per-user credentials)
-	MCPStore        store.MCPServerStore  // for credential lookup
-	MCPPool         *mcpbridge.Pool       // user-keyed connection pool
-	MCPUserCredSrvs []store.MCPAccessInfo // servers needing per-user creds
+	MCPStore        store.MCPServerStore   // for credential lookup
+	MCPPool         *mcpbridge.Pool        // user-keyed connection pool
+	MCPUserCredSrvs []store.MCPAccessInfo  // servers needing per-user creds
+	MCPGrantChecker mcpbridge.GrantChecker // runtime grant verification (nil = skip)
 
 	// V3 orchestration mode (resolved by resolver, controls tool visibility)
-	OrchMode          OrchestrationMode
-	DelegateTargets   []DelegateTargetEntry // delegation targets for prompt injection
+	OrchMode        OrchestrationMode
+	DelegateTargets []DelegateTargetEntry // delegation targets for prompt injection
 
 	// V3 evolution metrics store for recording tool/retrieval/feedback metrics
 	EvolutionMetricsStore store.EvolutionMetricsStore
+
+	// Skill self-evolution metrics store for use_skill/slash activation metrics
+	SkillEvolutionStore store.SkillEvolutionStore
+	SkillStore          store.SkillStore
 
 	// User identity resolver for credential lookups (maps channel contacts → tenant users)
 	UserResolver UserIdentityResolver
@@ -419,6 +476,15 @@ func (l *Loop) effectiveMaxTokens() int {
 		return l.maxTokens
 	}
 	return defaultMaxTokens
+}
+
+// resolveReserveTokens returns the reserve token buffer from compaction config.
+// Issue 958: Wire ReserveTokensFloor to prevent context overflow before compaction.
+func (l *Loop) resolveReserveTokens() int {
+	if l.compactionCfg != nil && l.compactionCfg.ReserveTokensFloor > 0 {
+		return l.compactionCfg.ReserveTokensFloor
+	}
+	return 0
 }
 
 func NewLoop(cfg LoopConfig) *Loop {
@@ -449,6 +515,7 @@ func NewLoop(cfg LoopConfig) *Loop {
 		displayName:            cfg.DisplayName,
 		agentUUID:              cfg.AgentUUID,
 		tenantID:               cfg.TenantID,
+		agentOtherConfig:       append([]byte(nil), cfg.AgentOtherConfig...), // defensive copy
 		agentType:              cfg.AgentType,
 		provider:               cfg.Provider,
 		model:                  cfg.Model,
@@ -467,14 +534,17 @@ func NewLoop(cfg LoopConfig) *Loop {
 		sandboxCfg:             cfg.SandboxCfg,
 		eventPub:               cfg.Bus,
 		domainBus:              cfg.DomainBus,
+		hookDispatcher:         cfg.HookDispatcher,
 		sessions:               cfg.Sessions,
 		tools:                  cfg.Tools,
+		registry:               cfg.Tools,
 		toolPolicy:             cfg.ToolPolicy,
 		agentToolPolicy:        cfg.AgentToolPolicy,
 		onEvent:                cfg.OnEvent,
 		ownerIDs:               cfg.OwnerIDs,
 		skillsLoader:           cfg.SkillsLoader,
 		skillAllowList:         cfg.SkillAllowList,
+		skillSlashCommands:     cfg.SkillSlashCommands,
 		hasMemory:              cfg.HasMemory,
 		contextFiles:           cfg.ContextFiles,
 		defaultTimezone:        cfg.DefaultTimezone,
@@ -498,11 +568,14 @@ func NewLoop(cfg LoopConfig) *Loop {
 		builtinToolSettings:    cfg.BuiltinToolSettings,
 		tenantToolSettings:     cfg.TenantToolSettings,
 		tenantAllowedPaths:     cfg.TenantAllowedPaths,
+		systemConfigs:          cfg.SystemConfigs,
 		disabledTools:          cfg.DisabledTools,
 		reasoningConfig:        cfg.ReasoningConfig,
 		promptMode:             cfg.PromptMode,
 		pinnedSkills:           cfg.PinnedSkills,
 		selfEvolve:             cfg.SelfEvolve,
+		allowImageGeneration:   cfg.AllowImageGeneration,
+		ttsAutoMode:            cfg.TTSAutoMode,
 		skillEvolve:            cfg.SkillEvolve,
 		skillNudgeInterval:     cfg.SkillNudgeInterval,
 		isTeamLead:             cfg.IsTeamLead,
@@ -514,47 +587,54 @@ func NewLoop(cfg LoopConfig) *Loop {
 		modelPricing:           cfg.ModelPricing,
 		budgetMonthlyCents:     cfg.BudgetMonthlyCents,
 		tracingStore:           cfg.TracingStore,
+		usageCaps:              cfg.UsageCaps,
+		usageEvents:            cfg.UsageEvents,
 		memStore:               cfg.MemoryStore,
 		mcpStore:               cfg.MCPStore,
 		mcpPool:                cfg.MCPPool,
 		mcpUserCredSrvs:        cfg.MCPUserCredSrvs,
+		mcpGrantChecker:        cfg.MCPGrantChecker,
 		orchMode:               cfg.OrchMode,
 		delegateTargets:        cfg.DelegateTargets,
 		evolutionMetricsStore:  cfg.EvolutionMetricsStore,
+		skillEvolutionStore:    cfg.SkillEvolutionStore,
+		skillStore:             cfg.SkillStore,
 		userResolver:           cfg.UserResolver,
 	}
 }
 
 // RunRequest is the input for processing a message through the agent.
 type RunRequest struct {
-	SessionKey        string             // composite key: agent:{agentId}:{channel}:{peerKind}:{chatId}
-	Message           string             // user message
-	Media             []bus.MediaFile    // local media files with MIME types
-	ForwardMedia      []bus.MediaFile    // media files to forward to output (from delegation results)
-	Channel           string             // source channel instance name (e.g. "my-telegram-bot")
-	ChannelType       string             // platform type (e.g. "zalo_personal", "telegram") — for system prompt context
-	ChatTitle         string             // group chat display name (e.g. Telegram group title)
-	ChatID            string             // source chat ID
-	PeerKind          string             // "direct" or "group" (for session key building and tool context)
-	RunID             string             // unique run identifier
-	UserID            string             // external user ID (TEXT, free-form) for multi-tenant scoping
-	SenderID          string             // original individual sender ID (preserved in group chats for permission checks)
-	SenderName        string             // display name from channel metadata (for bootstrap auto-contact)
-	Stream            bool               // whether to stream response chunks
-	ExtraSystemPrompt string             // optional: injected into system prompt (skills, subagent context, etc.)
-	SkillFilter       []string           // per-request skill override: nil=use agent default, []=no skills, ["x","y"]=whitelist
-	HistoryLimit      int                // max user turns to keep in context (0=unlimited, from channel config)
-	ToolAllow         []string           // per-group tool allow list (nil = no restriction, supports "group:xxx")
-	LocalKey          string             // composite key with topic/thread suffix for routing (e.g. "-100123:topic:42")
-	ParentTraceID     uuid.UUID          // if set, reuse parent trace instead of creating new (announce runs)
-	ParentRootSpanID  uuid.UUID          // if set, nest announce agent span under this parent span
-	LinkedTraceID     uuid.UUID          // if set, create new trace with parent_trace_id pointing to this (team task runs)
-	TraceName         string             // override trace name (default: "chat <agentID>")
-	TraceTags         []string           // additional tags for the trace (e.g. "cron")
-	MaxIterations     int                // per-request override (0 = use agent default, must be lower)
-	ModelOverride     string             // per-request model override (heartbeat uses cheaper model)
-	ProviderOverride  providers.Provider // per-request provider override (heartbeat uses different provider)
-	LightContext      bool               // skip loading context files (only inject ExtraSystemPrompt)
+	SessionKey         string             // composite key: agent:{agentId}:{channel}:{peerKind}:{chatId}
+	Message            string             // user message
+	Media              []bus.MediaFile    // local media files with MIME types
+	ForwardMedia       []bus.MediaFile    // media files to forward to output (from delegation results)
+	Channel            string             // source channel instance name (e.g. "my-telegram-bot")
+	ChannelType        string             // platform type (e.g. "zalo_personal", "telegram") — for system prompt context
+	BitrixPortalDomain string             // bitrix24-only: portal domain (e.g. "tamgiac.bitrix24.com") for entity URL construction
+	ChatTitle          string             // group chat display name (e.g. Telegram group title)
+	ChatID             string             // source chat ID
+	PeerKind           string             // "direct" or "group" (for session key building and tool context)
+	RunID              string             // unique run identifier
+	UserID             string             // external user ID (TEXT, free-form) for multi-tenant scoping
+	SenderID           string             // original individual sender ID (preserved in group chats for permission checks)
+	SenderName         string             // display name from channel metadata (for bootstrap auto-contact)
+	Role               string             // caller's RBAC role (admin/operator/viewer/owner); bypasses per-user grants for authenticated admins (#915)
+	Stream             bool               // whether to stream response chunks
+	ExtraSystemPrompt  string             // optional: injected into system prompt (skills, subagent context, etc.)
+	SkillFilter        []string           // per-request skill override: nil=use agent default, []=no skills, ["x","y"]=whitelist
+	HistoryLimit       int                // max user turns to keep in context (0=unlimited, from channel config)
+	ToolAllow          []string           // per-group tool allow list (nil = no restriction, supports "group:xxx")
+	LocalKey           string             // composite key with topic/thread suffix for routing (e.g. "-100123:topic:42")
+	ParentTraceID      uuid.UUID          // if set, reuse parent trace instead of creating new (announce runs)
+	ParentRootSpanID   uuid.UUID          // if set, nest announce agent span under this parent span
+	LinkedTraceID      uuid.UUID          // if set, create new trace with parent_trace_id pointing to this (team task runs)
+	TraceName          string             // override trace name (default: "chat <agentID>")
+	TraceTags          []string           // additional tags for the trace (e.g. "cron")
+	MaxIterations      int                // per-request override (0 = use agent default, must be lower)
+	ModelOverride      string             // per-request model override (heartbeat uses cheaper model)
+	ProviderOverride   providers.Provider // per-request provider override (heartbeat uses different provider)
+	LightContext       bool               // skip loading context files (only inject ExtraSystemPrompt)
 
 	// Run classification
 	RunKind       string // "delegation", "announce" — empty for user-initiated runs
@@ -565,6 +645,11 @@ type RunRequest struct {
 	// When set, the loop drains this channel at turn boundaries to inject
 	// user follow-up messages into the running conversation.
 	InjectCh <-chan InjectedMessage
+
+	// OnTraceCreated is called once the trace UUID is determined for this run.
+	// Used by the gateway to associate the trace ID with the active run entry
+	// so force-abort can mark the correct trace as cancelled. Nil = no-op.
+	OnTraceCreated func(traceID uuid.UUID)
 
 	// Delegation context (set when running as a delegate agent)
 	DelegationID  string // delegation ID for event correlation
@@ -584,7 +669,7 @@ type RunRequest struct {
 // RunResult is the output of a completed agent run.
 type RunResult struct {
 	Content        string           `json:"content"`
-	Thinking       string           `json:"thinking,omitempty"`       // reasoning content from thinking models (Claude, o3, DeepSeek-R1, Kimi)
+	Thinking       string           `json:"thinking,omitempty"` // reasoning content from thinking models (Claude, o3, DeepSeek-R1, Kimi)
 	RunID          string           `json:"runId"`
 	Iterations     int              `json:"iterations"`
 	Usage          *providers.Usage `json:"usage,omitempty"`
@@ -599,8 +684,12 @@ type RunResult struct {
 type MediaResult struct {
 	Path        string `json:"path"`                   // local file path
 	ContentType string `json:"content_type,omitempty"` // MIME type
+	Caption     string `json:"caption,omitempty"`      // optional outbound caption
 	Size        int64  `json:"size,omitempty"`         // file size in bytes
 	AsVoice     bool   `json:"as_voice,omitempty"`     // send as voice message (Telegram OGG)
+	// Prompt is the generation prompt for AI-generated media (e.g. create_image).
+	// Empty for user-uploaded or non-generated files.
+	Prompt string `json:"prompt,omitempty"`
 }
 
 // runState encapsulates all mutable state for a single agent run.

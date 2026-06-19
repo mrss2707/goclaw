@@ -3,6 +3,7 @@ package mcp
 import (
 	"testing"
 
+	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -93,7 +94,7 @@ func TestBridgeToolNaming(t *testing.T) {
 	}
 
 	// Without prefix → auto-derived from server name
-	bt := NewBridgeTool("myserver", mcpTool, nil, "", 30, nil)
+	bt := NewBridgeTool("myserver", mcpTool, nil, "", 30, nil, uuid.Nil, nil)
 	if bt.Name() != "mcp_myserver__query" {
 		t.Errorf("expected name=mcp_myserver__query, got %s", bt.Name())
 	}
@@ -105,7 +106,7 @@ func TestBridgeToolNaming(t *testing.T) {
 	}
 
 	// With non-mcp_ prefix → gets mcp_ prepended
-	bt2 := NewBridgeTool("myserver", mcpTool, nil, "pg", 0, nil)
+	bt2 := NewBridgeTool("myserver", mcpTool, nil, "pg", 0, nil, uuid.Nil, nil)
 	if bt2.Name() != "mcp_pg__query" {
 		t.Errorf("expected name=mcp_pg__query, got %s", bt2.Name())
 	}
@@ -114,13 +115,13 @@ func TestBridgeToolNaming(t *testing.T) {
 	}
 
 	// With mcp_ prefix → unchanged
-	bt3 := NewBridgeTool("myserver", mcpTool, nil, "mcp_pg", 0, nil)
+	bt3 := NewBridgeTool("myserver", mcpTool, nil, "mcp_pg", 0, nil, uuid.Nil, nil)
 	if bt3.Name() != "mcp_pg__query" {
 		t.Errorf("expected name=mcp_pg__query, got %s", bt3.Name())
 	}
 
 	// Server name with hyphens → sanitized to underscores
-	bt4 := NewBridgeTool("my-server", mcpTool, nil, "", 0, nil)
+	bt4 := NewBridgeTool("my-server", mcpTool, nil, "", 0, nil, uuid.Nil, nil)
 	if bt4.Name() != "mcp_my_server__query" {
 		t.Errorf("expected name=mcp_my_server__query, got %s", bt4.Name())
 	}
@@ -128,6 +129,57 @@ func TestBridgeToolNaming(t *testing.T) {
 	// Default timeout
 	if bt2.timeoutSec != 60 {
 		t.Errorf("expected default timeout=60, got %d", bt2.timeoutSec)
+	}
+}
+
+func TestBridgeToolWithHints(t *testing.T) {
+	mcpTool := mcpgo.Tool{
+		Name:        "search",
+		Description: "Run a search",
+		InputSchema: mcpgo.ToolInputSchema{Type: "object"},
+	}
+
+	// No hints → original description unchanged
+	bt := NewBridgeTool("srv", mcpTool, nil, "", 30, nil, uuid.Nil, nil)
+	if bt.Description() != "Run a search" {
+		t.Errorf("expected unchanged description, got %q", bt.Description())
+	}
+
+	// Global hint only
+	bt2 := NewBridgeTool("srv", mcpTool, nil, "", 30, nil, uuid.Nil, nil).
+		WithHints("No trailing semicolons.", "")
+	got := bt2.Description()
+	if got != "Run a search\n\n[Server hint] No trailing semicolons." {
+		t.Errorf("global-only mismatch:\n%q", got)
+	}
+
+	// Per-tool hint only
+	bt3 := NewBridgeTool("srv", mcpTool, nil, "", 30, nil, uuid.Nil, nil).
+		WithHints("", "Use arrow func.")
+	if bt3.Description() != "Run a search\n\n[Tool hint] Use arrow func." {
+		t.Errorf("tool-only mismatch: %q", bt3.Description())
+	}
+
+	// Both hints — order: global then tool
+	bt4 := NewBridgeTool("srv", mcpTool, nil, "", 30, nil, uuid.Nil, nil).
+		WithHints("G.", "T.")
+	if bt4.Description() != "Run a search\n\n[Server hint] G.\n\n[Tool hint] T." {
+		t.Errorf("combined mismatch: %q", bt4.Description())
+	}
+
+	// Whitespace-only hints → treated as empty (no suffix)
+	bt5 := NewBridgeTool("srv", mcpTool, nil, "", 30, nil, uuid.Nil, nil).
+		WithHints("  \n ", "\t")
+	if bt5.Description() != "Run a search" {
+		t.Errorf("whitespace-only hints should render no suffix, got %q", bt5.Description())
+	}
+
+	// WithHints can be chained and reset by re-calling
+	bt6 := NewBridgeTool("srv", mcpTool, nil, "", 30, nil, uuid.Nil, nil).
+		WithHints("first", "hint")
+	bt6.WithHints("", "")
+	if bt6.Description() != "Run a search" {
+		t.Errorf("calling WithHints with empty should clear suffix, got %q", bt6.Description())
 	}
 }
 

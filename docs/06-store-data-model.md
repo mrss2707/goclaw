@@ -45,8 +45,10 @@ The `Stores` struct is the top-level container holding all PostgreSQL-backed sto
 | ContactStore | `PGContactStore` | Channel contacts (auto-collected), cross-channel deduplication, merge |
 | ActivityStore | `PGActivityStore` | Audit logs, action tracking, compliance |
 | SnapshotStore | `PGSnapshotStore` | Hourly usage snapshots, cost aggregation, time series queries |
+| UsageCapStore | `PGUsageCapStore` | OpenRouter pricing catalog, pricing overrides, cap policies, reservations, counters, events |
 | SecureCLIStore | `PGSecureCLIStore` | CLI binary configs with encrypted credential injection |
 | APIKeyStore | `PGAPIKeyStore` | Gateway API keys, scopes, expiration, revocation |
+| HookStore | `PGHookStore` | Lifecycle hook definitions (event, handler type, matcher, config), execution audit log |
 
 ### SQLite Parity (Lite Edition)
 
@@ -63,6 +65,51 @@ The `Stores` struct is the top-level container holding all PostgreSQL-backed sto
 | AgentLinksStore | `SQLiteAgentLinks` | LIKE search, no vector |
 | SubagentTasksStore | `SQLiteSubagentTasks` | ✓ Parity (json_set for metadata merge) |
 | SecureCLIStore | `SQLiteSecureCLIStore` | ✓ Parity + AES-256-GCM encryption mandatory (GOCLAW_KEY env var required) |
+| HookStore | `SQLiteHookStore` | ✓ Parity (agent_hooks + hook_executions tables, same schema as PG) |
+
+---
+
+## Agent Model Fallback Storage
+
+Agent rows include `model_fallback`, stored as JSONB in PostgreSQL and TEXT JSON in SQLite. The config is per-agent and normalized before runtime use:
+
+- `enabled`: whether fallback is active.
+- `strategy`: currently `priority_order`.
+- `candidates`: ordered backup provider/model pairs. The primary agent provider/model is not stored in this list.
+- `max_attempts`: optional cap across primary plus fallback candidates.
+- `cooldown_enabled`: temporarily skips recently failing routes when enabled.
+
+Migration versions:
+
+- PostgreSQL: `000065_agent_model_fallback`.
+- SQLite: schema v33 to v34.
+
+---
+
+## Usage Cap Storage
+
+Usage cap enforcement is Standard/PostgreSQL-only in round one. The `UsageCapStore` is wired on the PostgreSQL store factory and left nil in SQLite/Lite builds.
+
+Tables:
+- `usage_pricing_catalog`: OpenRouter model catalog prices, raw upstream model payload, sync time.
+- `usage_pricing_overrides`: tenant/provider/model override prices for custom billing assumptions.
+- `usage_cap_policies`: cap definitions scoped by tenant, agent, provider, provider type, model, `window_key`, and `source`.
+- `usage_cap_counters`: current window used and reserved token/cost counters.
+- `usage_cap_reservations`: preflight reservations keyed by LLM call attempt.
+- `usage_cap_events`: allow/block/reconcile/skip audit events.
+
+Reservation updates are atomic: counters are updated only when `used + reserved + estimate` remains below configured token and cost ceilings.
+Reservation keys are idempotent per policy, so a retry using the same key does not double-increment reserved counters.
+Policy `agent_id` references must belong to the same tenant as the policy. Policy and pricing override `provider_id` references may belong to the same tenant or the master tenant for default provider fallback, but not another non-master tenant.
+Catalog and override price fields are nullable decimal strings with non-negative validation in the store layer and database checks.
+Pricing resolution checks exact override/catalog model IDs first, then provider-derived OpenRouter aliases for native unprefixed model IDs.
+
+Agent `budget_monthly_cents` values are bridged into `usage_cap_policies` with `source = 'agent_budget_monthly_cents'`, an agent scope, `window_key = 'month'`, and `max_cost_micros = budget_monthly_cents * 10000`. Updating or clearing the agent budget keeps that generated policy in sync; manual cap policies continue to use `source = 'manual'`.
+
+Migration versions:
+
+- PostgreSQL: `000070_usage_caps_pricing`, `000071_usage_cap_policies`, `000072_agent_budget_usage_cap_bridge`.
+- SQLite: no schema change; feature is not active in Lite.
 
 ---
 
@@ -433,7 +480,14 @@ Pre-computed usage snapshots (hourly aggregations) for analytics dashboards. Tra
 
 ### SecureCLIStore
 
-CLI binary credential configuration with encrypted environment variable injection. Credentials are auto-injected into child processes without exposing them to command output.
+CLI binary credential configuration with encrypted environment variable
+injection. Credentials are auto-injected into child processes without exposing
+them to command output.
+
+Credential rows can live at binary, agent, channel/context, or user scope.
+Runtime resolution prefers user overrides, then context credentials, then agent
+credentials, then binary defaults. The `secure_cli_agent_credentials` table
+stores one encrypted PAT/SSH/env payload per `(binary_id, agent_id, tenant_id)`.
 
 | Method | Purpose |
 |--------|---------|
@@ -445,6 +499,9 @@ CLI binary credential configuration with encrypted environment variable injectio
 | `ListByAgent(agentID)` | Return configs for a specific agent |
 | `LookupByBinary(binaryName, agentID)` | Find best-matching config (agent-specific > global) |
 | `ListEnabled()` | Return enabled configs for TOOLS.md generation |
+| `ListAgentCredentials(binaryID)` | Return masked agent credential metadata |
+| `SetAgentCredentialsTyped(binaryID, agentID, env, type, hostScope)` | Store agent-scoped PAT/SSH/env payload |
+| `DeleteAgentCredentials(binaryID, agentID)` | Remove an agent-scoped credential |
 
 ### APIKeyStore
 
@@ -681,6 +738,13 @@ L0 (Working Memory)           L1 (Episodic Memory)        L2 (Semantic Memory)
 | `vault_versions` | Document version history (prepared for v3.1) | `doc_id`, `version`, `content`, `changed_by`, `created_at` |
 | `kg_entities` | Extended with temporal columns | `valid_from` (TIMESTAMPTZ), `valid_until` (TIMESTAMPTZ) for temporal facts |
 | `kg_relations` | Extended with temporal columns | `valid_from` (TIMESTAMPTZ), `valid_until` (TIMESTAMPTZ) for temporal edges |
+| `channel_memory_extraction_runs` | Passive channel extraction run log | `tenant_id`, `channel_instance_id`, `history_key`, `trigger`, `status`, source range, counts, redaction metadata |
+| `channel_memory_extraction_items` | Review queue for passive channel memory candidates | `tenant_id`, `run_id`, `channel_instance_id`, `item_hash`, `item_type`, `summary`, `topics`, `entities`, `status`, approval/write timestamps |
+
+`ChannelMemoryExtractionStore` is implemented for PostgreSQL and SQLite. It is
+tenant-scoped, stores no raw message bodies, and uses deterministic hashes to
+deduplicate the same channel/history/type/summary candidate across repeated
+runs.
 
 ### 12 Promoted Agent Columns
 
@@ -802,52 +866,11 @@ Workers subscribe on startup via `consolidation.Register()`.
 
 ## 18. File Reference
 
-| File | Purpose |
-|------|---------|
-| `internal/store/stores.go` | `Stores` container struct (all 22 store interfaces) |
-| `internal/store/types.go` | `BaseModel`, `StoreConfig`, `GenNewID()` |
-| `internal/store/context.go` | Context propagation: `WithUserID`, `WithAgentID`, `WithAgentType`, `WithSenderID`, `WithTenantID` |
-| `internal/store/session_store.go` | `SessionStore` interface, `SessionData`, `SessionInfo` |
-| `internal/store/memory_store.go` | `MemoryStore` interface, `MemorySearchResult`, `EmbeddingProvider` |
-| `internal/store/skill_store.go` | `SkillStore` interface |
-| `internal/store/agent_store.go` | `AgentStore` interface |
-| `internal/store/team_store.go` | `TeamStore` interface, `TeamData`, `TeamTaskData`, `DelegationHistoryData`, `TeamMessageData` |
-| `internal/store/provider_store.go` | `ProviderStore` interface |
-| `internal/store/tracing_store.go` | `TracingStore` interface, `TraceData`, `SpanData` |
-| `internal/store/mcp_store.go` | `MCPServerStore` interface, grant types, access request types |
-| `internal/store/channel_instance_store.go` | `ChannelInstanceStore` interface |
-| `internal/store/config_secrets_store.go` | `ConfigSecretsStore` interface |
-| `internal/store/pairing_store.go` | `PairingStore` interface |
-| `internal/store/cron_store.go` | `CronStore` interface |
-| `internal/store/custom_tool_store.go` | `CustomToolStore` interface |
-| `internal/store/builtin_tool_store.go` | `BuiltinToolStore` interface, system tool metadata |
-| `internal/store/pending_message_store.go` | `PendingMessageStore` interface, group message queue |
-| `internal/store/knowledge_graph_store.go` | `KnowledgeGraphStore` interface, entities and relations |
-| `internal/store/contact_store.go` | `ContactStore` interface, channel contact tracking |
-| `internal/store/activity_store.go` | `ActivityStore` interface, audit logs |
-| `internal/store/snapshot_store.go` | `SnapshotStore` interface, usage aggregation |
-| `internal/store/secure_cli_store.go` | `SecureCLIStore` interface, CLI credential injection |
-| `internal/store/api_key_store.go` | `APIKeyStore` interface, gateway API keys |
-| `internal/store/episodic_store.go` | `EpisodicStore` interface, episodic summary CRUD & hybrid search (v3 new) |
-| `internal/store/evolution_store.go` | `EvolutionMetricsStore`, `EvolutionSuggestionStore` interfaces (v3 new) |
-| `internal/store/vault_store.go` | `VaultStore` interface, document registry & links (v3 new) |
-| `internal/store/agent_link_store.go` | `AgentLinkStore` interface, delegation links (v3 new) |
-| `internal/store/pg/factory.go` | PG store factory: creates all PG store instances from a connection pool |
-| `internal/store/pg/sessions.go` | `PGSessionStore`: session cache, Save, GetOrCreate |
-| `internal/store/pg/agents.go` | `PGAgentStore`: CRUD, soft delete, access control |
-| `internal/store/pg/agents_context.go` | Agent and user context file operations |
-| `internal/store/pg/teams.go` | `PGTeamStore`: teams, tasks (atomic claim), messages, delegation history |
-| `internal/store/pg/memory_docs.go` | `PGMemoryStore`: document CRUD, indexing, chunking |
-| `internal/store/pg/memory_search.go` | Hybrid search: FTS, vector, ILIKE fallback, merge |
-| `internal/store/pg/skills.go` | `PGSkillStore`: skill CRUD and grants |
-| `internal/store/pg/skills_grants.go` | Skill agent and user grants |
-| `internal/store/pg/mcp_servers.go` | `PGMCPServerStore`: server CRUD, grants, access requests |
-| `internal/store/pg/channel_instances.go` | `PGChannelInstanceStore`: channel instance CRUD |
-| `internal/store/pg/config_secrets.go` | `PGConfigSecretsStore`: encrypted config secrets |
-| `internal/store/pg/custom_tools.go` | `PGCustomToolStore`: custom tool CRUD with encrypted env |
-| `internal/store/pg/providers.go` | `PGProviderStore`: provider CRUD with encrypted keys |
-| `internal/store/pg/tracing.go` | `PGTracingStore`: traces and spans with batch insert |
-| `internal/store/pg/pool.go` | Connection pool management |
-| `internal/store/pg/helpers.go` | Nullable helpers, JSON helpers, `execMapUpdate()`, `StructScan` |
-| `internal/store/validate.go` | Input validation utilities |
-| `internal/tools/context_keys.go` | Tool context keys including `WithToolWorkspace` |
+| Module | Path | Purpose |
+|---|---|---|
+| Store interfaces | `internal/store/` | All 22+ store interfaces (`SessionStore`, `AgentStore`, `TeamStore`, etc.), `Stores` container, context propagation helpers, v3 stores (episodic, vault, evolution, agent links) |
+| PostgreSQL implementations | `internal/store/pg/` | PG factory, `PGSessionStore`, `PGAgentStore`, `PGTeamStore`, `PGMemoryStore`, and all other PG-backed implementations; connection pool; helpers |
+| SQLite implementations | `internal/store/sqlitestore/` | SQLite-backed stores for desktop/Lite edition |
+| Tool context keys | `internal/tools/context_keys.go` | Tool context keys including `WithToolWorkspace` |
+
+Use `grep` or your editor's symbol search for specific files.

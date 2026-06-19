@@ -35,8 +35,10 @@ func (b *BridgePromptBuilder) Build(cfg PromptConfig) (string, error) {
 		spc.AgentID = cfg.IdentityData.AgentName
 		spc.Model = cfg.IdentityData.Model
 		spc.Channel = cfg.IdentityData.Channel
+		spc.ChatID = cfg.IdentityData.ChatID
 		spc.ChatTitle = cfg.IdentityData.ChatTitle
 		spc.PeerKind = cfg.IdentityData.PeerKind
+		spc.SenderName = cfg.IdentityData.SenderName
 	}
 
 	if cfg.Persona {

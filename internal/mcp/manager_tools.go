@@ -8,7 +8,6 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
-	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
 // UserCredServers returns servers requiring per-user credentials.
@@ -53,9 +52,9 @@ func (m *Manager) ServerToolNames(serverName string) []string {
 func (m *Manager) updateMCPGroup() {
 	allNames := m.ToolNames()
 	if len(allNames) > 0 {
-		tools.RegisterToolGroup("mcp", allNames)
+		m.registry.RegisterToolGroup("mcp", allNames)
 	} else {
-		tools.UnregisterToolGroup("mcp")
+		m.registry.UnregisterToolGroup("mcp")
 	}
 }
 
@@ -88,7 +87,7 @@ func (m *Manager) unregisterAllTools() {
 				m.registry.Unregister(toolName)
 			}
 		}
-		tools.UnregisterToolGroup("mcp:" + name)
+		m.registry.UnregisterToolGroup("mcp:" + name)
 		slog.Debug("mcp.server.unregistered", "server", name)
 	}
 
@@ -105,7 +104,7 @@ func (m *Manager) unregisterAllTools() {
 	m.servers = make(map[string]*serverState)
 	m.poolServers = nil
 	m.poolToolNames = nil
-	tools.UnregisterToolGroup("mcp")
+	m.registry.UnregisterToolGroup("mcp")
 }
 
 // ToolInfo holds a tool's name and description for API responses.
@@ -149,61 +148,4 @@ func DiscoverTools(ctx context.Context, transportType, command string, args []st
 		result = append(result, ToolInfo{Name: t.Name, Description: t.Description})
 	}
 	return result, nil
-}
-
-// filterTools removes tools from the registry that don't match the allow/deny lists.
-func (m *Manager) filterTools(serverName string, allow, deny []string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Get the tool names list (pool-backed or standalone)
-	var toolNames []string
-	_, isPool := m.poolServers[serverName]
-	if isPool {
-		toolNames = m.poolToolNames[serverName]
-	} else if ss, ok := m.servers[serverName]; ok {
-		toolNames = ss.toolNames
-	} else {
-		return
-	}
-
-	allowSet := toSet(allow)
-	denySet := toSet(deny)
-
-	var kept []string
-	for _, toolName := range toolNames {
-		bt, ok := m.registry.Get(toolName)
-		if !ok {
-			continue
-		}
-		bridge, ok := bt.(*BridgeTool)
-		if !ok {
-			kept = append(kept, toolName)
-			continue
-		}
-		origName := bridge.OriginalName()
-
-		// Deny takes priority
-		if _, denied := denySet[origName]; denied {
-			m.registry.Unregister(toolName)
-			continue
-		}
-
-		// If allow list is set, only keep tools in the allow list
-		if len(allowSet) > 0 {
-			if _, allowed := allowSet[origName]; !allowed {
-				m.registry.Unregister(toolName)
-				continue
-			}
-		}
-
-		kept = append(kept, toolName)
-	}
-
-	// Update the correct tool names list
-	if isPool {
-		m.poolToolNames[serverName] = kept
-	} else {
-		m.servers[serverName].toolNames = kept
-	}
 }

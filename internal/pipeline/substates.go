@@ -8,7 +8,7 @@ import (
 
 // ContextState: owned by ContextStage, read by ThinkStage.
 type ContextState struct {
-	ContextFiles   []any  // bootstrap.ContextFile — typed in Phase 2, any avoids circular import
+	ContextFiles   []any // bootstrap.ContextFile — typed in Phase 2, any avoids circular import
 	SkillsSummary  string
 	TeamContext    string // team workspace context injected for team runs
 	MemorySection  string // L0 auto-injected memory context for system prompt
@@ -32,7 +32,15 @@ type ThinkState struct {
 	LastResponse    *providers.ChatResponse
 	TotalUsage      providers.Usage
 	TruncRetries    int  // consecutive truncation retries (max 3)
+	OverflowRetries int  // context overflow compact+retry attempts (max 1)
 	StreamingActive bool // true during active stream
+
+	// Tools is populated by ContextStage (iteration=0) for overhead calculation.
+	// It holds the best-effort tool list at run start and is used exclusively by
+	// the overhead counter in ContextStage. ThinkStage does NOT consume this field —
+	// it always calls BuildFilteredTools per iteration because the tool list is
+	// iteration-dependent (final iteration strips all tools).
+	Tools []providers.ToolDefinition
 }
 
 // PruneState: owned by PruneStage.
@@ -44,6 +52,9 @@ type PruneState struct {
 
 // ToolState: owned by ToolStage.
 type ToolState struct {
+	// AllowedTools is the per-iteration execution allowlist built from tool
+	// definitions sent to the provider. Nil means "no runtime restriction".
+	AllowedTools   map[string]bool
 	LoopDetector   any // concrete type toolLoopState lives in agent; Phase 5 defines LoopDetector interface
 	TotalToolCalls int
 	AsyncToolCalls []string      // tool names that executed async (spawn)
@@ -58,6 +69,20 @@ type ObserveState struct {
 	FinalThinking  string // reasoning output
 	BlockReplies   int
 	LastBlockReply string
+
+	// ContinueAfterFinal is set when a user follow-up arrives after the model
+	// has produced a final answer but before the run finalizes. The pipeline
+	// must give the model another turn so accepted messages are not silently
+	// stored without being answered.
+	ContinueAfterFinal bool
+
+	// AssistantImages accumulates final (non-partial) images from every iteration's
+	// ChatResponse.Images. FinalizeStage persists these to workspace/media/.
+	// Accumulation is required because LastResponse holds only the final iteration's
+	// response — if the LLM emits an image_generation_call alongside a function_call
+	// in iter N and responds text-only in iter N+1, reading only LastResponse.Images
+	// would lose the image.
+	AssistantImages []providers.ImageContent
 }
 
 // CompactState: owned by CheckpointStage + MemoryFlushStage.
@@ -69,12 +94,12 @@ type CompactState struct {
 
 // EvolutionState: owned by skill evolution nudge logic.
 type EvolutionState struct {
-	Nudge70Sent      bool
-	Nudge90Sent      bool
-	PostscriptSent   bool
-	BootstrapWrite   bool // BOOTSTRAP.md write detected
-	TeamTaskCreates  int  // team_tasks tool calls
-	TeamTaskSpawns   int  // delegate tool calls (spawns)
+	Nudge70Sent     bool
+	Nudge90Sent     bool
+	PostscriptSent  bool
+	BootstrapWrite  bool // BOOTSTRAP.md write detected
+	TeamTaskCreates int  // team_tasks tool calls
+	TeamTaskSpawns  int  // delegate tool calls (spawns)
 }
 
 // RunResult is the final output of a pipeline run.

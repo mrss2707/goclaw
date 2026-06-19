@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os/exec"
 	"path/filepath"
@@ -15,7 +16,16 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
+	usagecaps "github.com/nextlevelbuilder/goclaw/internal/usage/caps"
 )
+
+// HandleVerifyProviderForTest invokes the verify handler directly without auth
+// middleware. Integration tests must inject the desired tenant_id into the
+// request context before calling. Production code MUST go through RegisterRoutes
+// so the auth/locale/tenant pipeline runs first.
+func (h *ProvidersHandler) HandleVerifyProviderForTest(w http.ResponseWriter, r *http.Request) {
+	h.handleVerifyProvider(w, r)
+}
 
 // handleVerifyProvider tests a provider+model combination with a minimal LLM call.
 //
@@ -33,14 +43,17 @@ func (h *ProvidersHandler) handleVerifyProvider(w http.ResponseWriter, r *http.R
 	var req struct {
 		Model string `json:"model"`
 	}
+	// Empty body == ping mode (connectivity check only). Truncated/malformed
+	// JSON still returns 400. io.EOF on Decode unambiguously means no body;
+	// io.ErrUnexpectedEOF is what truncated JSON returns.
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidJSON)})
-		return
+		if !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidJSON)})
+			return
+		}
+		// empty body — req.Model stays "" → pingMode below
 	}
-	if req.Model == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgRequired, "model")})
-		return
-	}
+	pingMode := req.Model == ""
 
 	// Look up provider record from DB to get the provider name
 	p, err := h.store.GetProvider(r.Context(), id)
@@ -51,6 +64,10 @@ func (h *ProvidersHandler) handleVerifyProvider(w http.ResponseWriter, r *http.R
 
 	// ACP: verify binary exists on the server (no LLM call needed)
 	if p.ProviderType == store.ProviderACP {
+		if pingMode {
+			writeJSON(w, http.StatusOK, map[string]any{"valid": true})
+			return
+		}
 		binary := p.APIBase
 		if binary == "" {
 			binary = "claude"
@@ -70,6 +87,10 @@ func (h *ProvidersHandler) handleVerifyProvider(w http.ResponseWriter, r *http.R
 
 	// Claude CLI: validate model alias locally (no LLM call needed)
 	if p.ProviderType == "claude_cli" {
+		if pingMode {
+			writeJSON(w, http.StatusOK, map[string]any{"valid": true})
+			return
+		}
 		validModels := map[string]bool{"sonnet": true, "opus": true, "haiku": true}
 		if validModels[req.Model] {
 			writeJSON(w, http.StatusOK, map[string]any{"valid": true})
@@ -92,6 +113,11 @@ func (h *ProvidersHandler) handleVerifyProvider(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	if pingMode {
+		writeJSON(w, http.StatusOK, map[string]any{"valid": true})
+		return
+	}
+
 	// Non-chat models (image/video generation) can't be verified via Chat API.
 	// Accept them if the provider is reachable (already validated above).
 	if isNonChatModel(req.Model) {
@@ -101,8 +127,9 @@ func (h *ProvidersHandler) handleVerifyProvider(w http.ResponseWriter, r *http.R
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
+	ctx = store.WithTenantID(ctx, p.TenantID)
 
-	_, err = provider.Chat(ctx, providers.ChatRequest{
+	reqChat := providers.ChatRequest{
 		Messages: []providers.Message{
 			{Role: "user", Content: "hi"},
 		},
@@ -111,6 +138,13 @@ func (h *ProvidersHandler) handleVerifyProvider(w http.ResponseWriter, r *http.R
 			// Use a small but safe value — reasoning models need headroom beyond 1 token.
 			"max_tokens": 50,
 		},
+	}
+	_, err = h.usageCaps.Chat(ctx, provider, reqChat, usagecaps.ChatOptions{
+		TenantID:        p.TenantID,
+		ProviderName:    p.Name,
+		ModelID:         req.Model,
+		Purpose:         "provider-verify",
+		MaxOutputTokens: 50,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "error": friendlyVerifyError(err)})

@@ -67,6 +67,84 @@ The consumer routes system messages based on sender ID prefixes:
 | `delegate:` | Parent agent's original session (legacy session key format) | team |
 | `teammate:` | Target agent session | team |
 
+### Inbound Debounce
+
+Normal channel messages pass through the shared inbound debouncer before agent execution. `gateway.inbound_debounce_ms` merges rapid text messages from the same `channel:chatID:senderID:agentID`; `0` means no debounce and positive values set the wait window. Agents can override the global value with `other_config.inbound_debounce_ms`; unset inherits the global config. Command/control messages such as `/stop`, `/reset`, and system escalations bypass the debouncer.
+
+### Human-like Delivery
+
+`gateway.chat_behavior` controls optional channel-only delivery polish. Delivery
+text is not added to session history or the main provider messages.
+
+- `quick_ack` sends one short receipt for non-streaming channel runs.
+  `mode="sidecar_generated"` uses a bounded sidecar LLM call;
+  `mode="llm_generated"` is kept as a backward-compatible alias;
+  `mode="fixed_template"` sends the first template; `mode="off"` disables it.
+- `quick_ack.provider/model` can choose a cheaper sidecar provider/model. If
+  unset, the delivery generator falls back to the agent provider/model. Timeout,
+  max token, and max char limits bound the call; templates are fallback output on
+  errors, timeouts, or empty sidecar text.
+- `intermediate_replies` sends sidecar-generated progress during tool phases. It
+  is independent from `quick_ack`: either feature can be enabled or disabled
+  alone.
+- Sidecar progress uses bounded delivery metadata only: message preview, locale,
+  channel/peer, agent label, and tool phase. It does not receive session
+  history, tool arguments, tool output, tool schemas, memory, or system prompts.
+- Deterministic Tool Status Messages no longer emit channel text. Platform
+  reactions and explicit Show Reasoning delivery remain separate behavior.
+- `final_split` splits long final text replies into a bounded number of
+  paragraph messages.
+- Override order is Channel > Agent > Workspace. Agent overrides live in
+  `agents.other_config.delivery_behavior`; channel overrides continue under
+  `chat_behavior`.
+- Legacy `gateway.block_reply` and channel `block_reply` values are still read
+  as inherited `intermediate_replies.enabled` defaults when the newer
+  `chat_behavior.intermediate_replies.enabled` field is unset.
+
+Splitting is intentionally conservative. Replies containing fenced code, tables, lists, quotes, JSON/XML-ish blocks, or URL-only paragraphs remain a single message. Media replies and streaming deliveries are not split.
+
+Progress messages are not added to session history by this behavior. Existing run timeline handling for explicit `block.reply` remains unchanged.
+
+### Outbound Media Delivery
+
+Agent tools can queue media files through `Result.Media`; the consumer converts
+those entries into `OutboundMessage.Media` and preserves file order, MIME type,
+filename, and optional captions.
+
+- `send_file` accepts either the legacy single `path` + optional `caption`, or
+  `attachments: [{path, caption?}, ...]` for batch delivery of existing
+  workspace files.
+- Telegram groups compatible outbound media into `sendMediaGroup` album chunks
+  of 2-10 items. Photo/video items can share a chunk; documents group only with
+  documents; audio groups only with audio. Voice-mode audio, singleton chunks,
+  oversized images sent as documents, and incompatible runs use the existing
+  ordered single-send fallback.
+- Discord already sends multiple files plus optional text in one message.
+- Slack and other media-capable channels keep ordered fallback behavior unless
+  their adapter advertises a stronger batch capability.
+
+### Reasoning Delivery
+
+Telegram channel config supports explicit reasoning delivery:
+
+| `reasoning_delivery` | Behavior |
+|----------------------|----------|
+| `streaming_only` | Legacy behavior. Show model reasoning only in the live streaming lane. |
+| `always_bubbles` | Force provider streaming internally and send reasoning as bounded channel bubbles, even when `dm_stream` / `group_stream` are off. |
+| `off` | Suppress reasoning output in the channel. Traces and provider usage remain unaffected. |
+
+Backward compatibility: if `reasoning_delivery` is missing, legacy `reasoning_stream=false` resolves to `off`; otherwise it resolves to `streaming_only`. Explicit `reasoning_delivery` always wins over the legacy boolean. Reasoning bubbles are delivery-only messages and are not added to assistant history.
+
+**Multi-attachment coalescing (#63).** Messages carrying attachments do NOT bypass the debouncer — that pre-fix shortcut was the source of N-replies for one user action. Instead, when media is present the effective window is `max(configured, mediaFloor)` so multi-file uploads land in the same buffer and flush together. Three surfaces apply the same invariant:
+
+| Surface | Buffer key | Trigger |
+|---------|------------|---------|
+| `internal/bus/inbound_debounce.go` | `(channel, chatID, senderID, agentID)` | Any inbound passing through the shared bus |
+| `internal/gateway/methods/chat_debounce.go` | `(userKey, sessionKey)` | `/v1/chat/completions` streaming sessions |
+| `internal/channels/telegram/album_aggregator.go` | `(chatID, MediaGroupID)` | Telegram media-group updates (album = N updates sharing one `MediaGroupID`) |
+
+The Telegram album aggregator runs at the channel layer after all access gates (mention, pairing, allow-list) pass — it buffers per `MediaGroupID`, pins the sender on first arrival as a security tripwire (mismatched sender → `security.album_sender_mismatch` + drop), and dispatches ONE call to the downstream pipeline on a 500ms silence window. `Channel.Stop()` synchronously drains pending albums before `pollCancel` so in-flight bursts always reach the agent loop. See `CONTRIBUTING.md` → "Multi-attachment coalescing" for the eight cross-surface invariants any new surface must honor.
+
 ---
 
 ## 2. Channel Interfaces
@@ -91,6 +169,8 @@ Every channel must implement the base interface:
 | `WebhookChannel` | Webhook HTTP handler mounting | Facebook, Feishu/Lark, Pancake |
 | `ReactionChannel` | Status reactions on messages | Telegram, Slack, Feishu |
 | `BlockReplyChannel` | Override gateway block_reply setting | Discord, Feishu/Lark, Pancake, Slack, Zalo OA, Zalo Personal |
+| `ChatBehaviorChannel` | Override gateway chat_behavior setting | Bitrix24, Discord, Feishu/Lark, Pancake, Slack, Telegram, WhatsApp, Zalo OA, Zalo Personal |
+| `ReasoningDeliveryChannel` | Override channel-visible reasoning delivery | Telegram |
 
 `BaseChannel` provides a shared implementation that all channels embed: allowlist matching, `HandleMessage()`, `CheckPolicy()`, and user ID extraction.
 
@@ -185,6 +265,7 @@ The Telegram channel uses long polling via the `telego` library (Telegram Bot AP
 - **Cancel commands**: `/stop` and `/stopall` intercepted before the 800ms debouncer. See [08-scheduling-cron.md](./08-scheduling-cron.md) for details.
 - **Concurrent group support**: Group sessions support up to 3 concurrent agent runs.
 - **Bot reply as implicit mention**: Replying to a bot message in a group counts as mentioning the bot.
+- **Show Reasoning delivery**: `reasoning_delivery=always_bubbles` decouples provider streaming from Telegram live streaming so reasoning can appear as bounded normal messages while the final answer remains non-streaming.
 
 ### Formatting Pipeline
 
@@ -245,26 +326,81 @@ Each topic can restrict which tools the agent may use. The `tools` field accepts
 
 The tool allow list is passed via message metadata and applied by the policy engine before the LLM sees the tool definitions.
 
-### Speech-to-Text
+### Voice Message Transcription (STT)
 
-Voice and audio messages can be transcribed via an external STT proxy service.
+Voice and audio messages are transcribed through a unified `audio.Manager` interface. All channels (Telegram, Discord, Feishu, WhatsApp) route transcription requests through the same STT chain.
+
+#### Unified STT Flow
 
 ```mermaid
 flowchart TD
-    VOICE["Voice/audio message"] --> DOWNLOAD["Download audio file<br/>from Telegram"]
-    DOWNLOAD --> STT["POST to STT proxy<br/>(multipart: file + tenant_id)"]
-    STT --> PARSE["Parse transcript"]
-    PARSE --> INJECT["Prepend to message:<br/>[audio: filename] Transcript: text"]
-    INJECT --> AGENT["Agent receives transcribed content"]
-
-    VOICE --> ROUTING{"VoiceAgentID configured?"}
+    VOICE["Voice/audio message"] --> ROUTE{Channel type?}
+    
+    ROUTE -->|Telegram/Discord/Feishu| DOWNLOAD["Download audio file"]
+    ROUTE -->|WhatsApp| WHATSAPP_CHECK{"whatsapp_enabled<br/>in settings?"}
+    
+    WHATSAPP_CHECK -->|No| WA_FALLBACK["[Voice message]<br/>(default opt-out)"]
+    WHATSAPP_CHECK -->|Yes| DOWNLOAD
+    
+    DOWNLOAD --> STT_CHECK{"STT providers<br/>configured?"}
+    STT_CHECK -->|Yes| STT_CHAIN["Try providers in order:<br/>elevenlabs, proxy"]
+    STT_CHECK -->|No| LEGACY{"Legacy bridge<br/>providers?"}
+    
+    LEGACY -->|Yes| STT_CHAIN
+    LEGACY -->|No| FALLBACK["[Voice message]"]
+    
+    STT_CHAIN -->|Success| TEXT["Transcribed text"]
+    STT_CHAIN -->|Fails/Timeout 10s| FALLBACK
+    
+    TEXT --> INJECT["Prepend to message:<br/>[audio: filename] Transcript: text"]
+    FALLBACK --> FALLBACK_INJECT["[Voice message]"]
+    
+    INJECT --> AGENT["Agent context"]
+    FALLBACK_INJECT --> AGENT
+    
+    VOICE --> ROUTING{"VoiceAgentID<br/>configured<br/>(Telegram)?"}
     ROUTING -->|Yes| VOICE_AGENT["Route to voice-specific agent"]
-    ROUTING -->|No| DEFAULT_AGENT["Route to channel's default agent"]
+    ROUTING -->|No| DEFAULT_AGENT["Default channel agent"]
 ```
 
-**Configuration**: STT proxy URL, timeout (default 30s), optional tenant ID and API key. If transcription fails, the media placeholder remains — no error is surfaced.
+#### Configuration & Decision Rules
 
-**Voice routing**: When `VoiceAgentID` is configured, audio/voice messages are routed to a different agent (e.g., a speech-specialized agent) instead of the channel's default agent.
+**Decision 2 (Conflict rule):** When `builtin_tools[stt].settings.providers[]` is present in the database, it OVERRIDES all legacy channel-specific STT configs. The legacy STT bridge (`STTProxyURL` → `proxy` provider) only activates when the providers list is empty or missing.
+
+| Setting | Behavior |
+|---------|----------|
+| `providers: ["elevenlabs", "proxy"]` | Try ElevenLabs Scribe first; fall back to legacy proxy |
+| `providers: []` (empty) | Skip all STT; voice → `[Voice message]` fallback |
+| `providers` missing (nil) | Check for legacy bridge at startup; activate if `STTProxyURL` exists |
+
+**Decision 6 (WhatsApp opt-in):** WhatsApp voice message STT is **OFF by default** (`whatsapp_enabled: false`). Rationale: WhatsApp voice messages are end-to-end encrypted; sending audio to an external STT provider breaks E2E encryption. Admins must explicitly toggle STT in the UI at **Config → Audio → STT** and acknowledge the E2E breaking change.
+
+When disabled (default):
+- Voice messages surface in agent context as `[Voice message]` (localized via i18n key `channel.voice_message_fallback`)
+- No audio leaves the device
+
+When enabled:
+- Voice audio is transcribed via the configured STT chain
+- Fallback to `[Voice message]` on failure/timeout (10s wall clock)
+
+#### Per-Channel Behavior
+
+| Channel | STT Support | Notes |
+|---------|:-:|---------|
+| **Telegram** | Yes | Uses unified chain; preserves Telegram voice MIME; legacy proxy override is keyed by platform type `telegram`; voice routing via `VoiceAgentID` config |
+| **Discord** | Yes | Standard flow; no special routing |
+| **Feishu** | Yes | Standard flow; no special routing |
+| **WhatsApp** | Yes (opt-in) | Requires explicit admin approval; default OFF |
+
+#### Factory Integration
+
+All channel factories accept `audioMgr *audio.Manager`:
+- Telegram: `FactoryWithStoresAndAudio(..., audioMgr)`
+- Discord: `FactoryWithAudio(..., audioMgr)`
+- Feishu: `FactoryWithStoresAndAudio(..., audioMgr)`
+- WhatsApp: `FactoryWithDBAudio(..., audioMgr, builtinToolStore)`
+
+WhatsApp additionally accepts `builtinToolStore store.BuiltinToolStore` to fetch the per-message `whatsapp_enabled` opt-in flag. Wiring is in `cmd/gateway_channels_setup.go` and `cmd/gateway.go`.
 
 ### Bot Commands
 
@@ -349,6 +485,8 @@ Each update increments a sequence number for ordering. Updates are throttled at 
 | Audio | `.opus` |
 | Video | `.mp4` |
 | Sticker | `.png` |
+
+**Filename preservation**: When a user uploads or shares a file with a recognizable name, the channel adapter populates `bus.MediaFile.Filename` with the original filename (e.g., Feishu file display name, Telegram `file_name`). This filename is then sanitized and persisted to disk in the format `{stem}-{8hex}{ext}` (e.g., `báo-cáo-2024-a1b2c3d4.pdf` → `bao-cao-2024-a1b2c3d4.pdf`). The sanitizer supports Vietnamese diacritics, CJK scripts, and filesystem safety. Media without a user-provided filename (voice notes, clipboard pastes) fall back to UUID-only names. Disk names with semantic stems enable vault enrichment to process documents contextually. See `internal/agent/media_filename.go` for sanitization rules.
 
 **Send (outbound)**: Files are uploaded to Feishu with automatic type detection (opus, mp4, pdf, doc, xls, ppt, or generic stream).
 
@@ -435,6 +573,7 @@ The Discord channel uses the `discordgo` library to connect via the Discord Gate
 - **Bot identity**: Fetches `@me` on startup to detect and ignore own messages
 - **Typing indicator**: 9-second keepalive while agent processes
 - **Group history**: Pending message buffer for context when mentioned
+- **Thread backfill**: When the bot is mentioned inside a Discord thread, the channel fetches up to 25 prior thread messages before the triggering message through Discord REST, prepends their text as context, and downloads up to 15 prior attachments for the same inbound media pipeline. This is thread-only, bounded to 5 MB per backfilled file with a 30-second timeout, and gracefully falls back to the current message when Discord lacks `READ_MESSAGE_HISTORY` or the REST request fails.
 
 ---
 
@@ -452,7 +591,7 @@ The Slack channel uses the `slack-go/slack` library to connect via Socket Mode (
 - **Mention gating**: `requireMention` default true; `<@botUserID>` stripped from content
 - **Thread participation cache**: After bot replies in a thread, subsequent messages in that thread auto-trigger response without @mention (24h TTL)
 - **Message dedup**: `channel+ts` key prevents duplicate processing on Socket Mode reconnect
-- **Message debounce**: Per-thread batching of rapid messages (300ms default, configurable)
+- **Message debounce**: Per-thread batching of rapid messages (300ms default, configurable; `debounce_delay: 0` disables)
 - **Dead socket classification**: Non-retryable auth errors (invalid_auth, token_revoked) fail fast instead of infinite reconnect
 - **Streaming**: Edit-in-place via `chat.update` with 1000ms throttle (Slack Tier 3 rate limit)
 - **Reactions**: Status emoji on user messages (thinking_face, hammer_and_wrench, white_check_mark, x, hourglass_flowing_sand)
@@ -561,7 +700,32 @@ Channel instances are loaded from the database with their assigned agent ID. The
 
 ---
 
-## 13. Local Key Propagation
+## 13. Passive Memory Extraction
+
+Passive channel memory is an opt-in per-channel feature. When enabled in
+`channel_instances.config.passive_memory`, the gateway periodically reads the
+existing tenant-scoped `channel_pending_messages` group buffers, redacts sensitive
+content, asks the background LLM provider for durable fact candidates, and stores
+only candidates in the review queue.
+
+Default behavior is privacy-first:
+
+- Disabled by default.
+- Group-only in v1.
+- Review mode enabled by default.
+- Runs by manual trigger, message cap, or interval.
+- New extraction tables store metadata, summaries, topics/entities, confidence,
+  status, and redaction counts, but not raw message bodies.
+
+Approved items write an `episodic_summaries` row with `source_type='channel'`
+and a deterministic `source_id`; existing consolidation workers then handle KG
+promotion. Reject/delete prevents later writes. Delete also removes the linked
+episodic row when one exists; already-promoted KG nodes are not synchronously
+deleted in v1.
+
+---
+
+## 14. Local Key Propagation
 
 Thread/topic context is preserved through the entire message pipeline using a `local_key` in message metadata. This ensures subagent, delegation, and team message results land in the correct thread — not the root chat.
 
@@ -577,7 +741,7 @@ All channel state — placeholders, streams, reactions, typing controllers, thre
 
 ---
 
-## 14. Per-User Isolation
+## 15. Per-User Isolation
 
 Channels provide per-user isolation through compound sender IDs and context propagation:
 
@@ -588,7 +752,7 @@ Channels provide per-user isolation through compound sender IDs and context prop
 
 ---
 
-## 15. Pairing System
+## 16. Pairing System
 
 The pairing system provides a DM authentication flow for channels using the `pairing` DM policy.
 
@@ -619,41 +783,14 @@ flowchart TD
 
 ## File Reference
 
-| File | Purpose |
-|------|---------|
-| `internal/channels/channel.go` | Channel interface, BaseChannel, extended interfaces, HandleMessage, Type() method |
-| `internal/channels/manager.go` | Manager: registration, StartAll, StopAll, channel lifecycle, webhook collection |
-| `internal/channels/dispatch.go` | Outbound message dispatcher, send error formatting |
-| `internal/channels/instance_loader.go` | DB-based channel instance loading |
-| `internal/channels/telegram/channel.go` | Telegram core: long polling, mention gating, typing indicators |
-| `internal/channels/telegram/handlers.go` | Message handling, media processing, forum topic detection |
-| `internal/channels/telegram/topic_config.go` | Per-topic config layering and resolution |
-| `internal/channels/telegram/commands.go` | Bot commands: /stop, /reset, /tasks, /addwriter, etc. |
-| `internal/channels/telegram/stt.go` | Speech-to-text proxy integration, voice agent routing |
-| `internal/channels/telegram/stream.go` | Streaming placeholder management |
-| `internal/channels/telegram/reactions.go` | Status reactions on messages |
-| `internal/channels/telegram/format.go` | Markdown → Telegram HTML pipeline, table rendering |
-| `internal/channels/feishu/feishu.go` | Feishu core: WS/Webhook modes, config, reactions |
-| `internal/channels/feishu/larkclient_messaging.go` | Streaming card create/update/close, message sending |
-| `internal/channels/feishu/media.go` | Media upload/download, type detection |
-| `internal/channels/feishu/bot_parse.go` | Mention resolution, message event parsing |
-| `internal/channels/feishu/bot.go` | Bot message handlers |
-| `internal/channels/feishu/bot_policy.go` | Policy evaluation |
-| `internal/channels/discord/discord.go` | Discord: gateway setup, session management, lifecycle |
-| `internal/channels/discord/handler.go` | Message handling, typing indicators, placeholder management |
-| `internal/channels/slack/channel.go` | Slack: Socket Mode, mention gating, thread caching, streaming |
-| `internal/channels/slack/handlers.go` | Message and event handling, pairing, group policy |
-| `internal/channels/slack/format.go` | Markdown → Slack mrkdwn pipeline |
-| `internal/channels/slack/reactions.go` | Status emoji reactions on messages |
-| `internal/channels/slack/stream.go` | Streaming message updates via placeholder editing |
-| `internal/channels/whatsapp/whatsapp.go` | WhatsApp: direct protocol client, QR auth, database persistence |
-| `internal/channels/whatsapp/factory.go` | Channel factory, database dialect detection |
-| `internal/channels/whatsapp/qr_methods.go` | QR code generation and authentication flow |
-| `internal/channels/whatsapp/format.go` | Message formatting (HTML-to-WhatsApp) |
-| `internal/channels/zalo/zalo.go` | Zalo OA: Bot API, long polling |
-| `internal/channels/zalo/personal/channel.go` | Zalo Personal: reverse-engineered protocol |
-| `internal/store/pg/pairing.go` | Pairing: code generation, approval, persistence (database-backed) |
-| `cmd/gateway_consumer.go` | Message routing: prefixes, cancel interception |
+| Module | Path | Purpose |
+|---|---|---|
+| Channel core | `internal/channels/` | `Channel` interface, `BaseChannel`, `Manager` (StartAll/StopAll), outbound dispatcher, DB instance loader |
+| Platform adapters | `internal/channels/{telegram,feishu,discord,slack,whatsapp,zalo}/` | Per-platform: message handling, formatting, streaming, reactions, media, pairing |
+| Audio / STT | `internal/audio/` | Audio manager, STT chain resolution, legacy STT bridge |
+| Pairing & routing | `internal/store/pg/pairing.go`, `cmd/gateway_consumer.go` | Pairing code persistence, inbound message routing and cancel interception |
+
+Use `grep` or your editor's symbol search for specific files.
 
 ---
 
@@ -666,3 +803,4 @@ flowchart TD
 | [08-scheduling-cron.md](./08-scheduling-cron.md) | /stop and /stopall commands, scheduler lanes, cron |
 | [09-security.md](./09-security.md) | Group file writer restrictions, security logging |
 | [11-agent-teams.md](./11-agent-teams.md) | Team message routing, delegation result delivery |
+| [project-changelog.md](./project-changelog.md) | Phase 5 audio manager & unified STT implementation |

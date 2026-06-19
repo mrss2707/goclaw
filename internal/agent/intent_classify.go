@@ -8,6 +8,7 @@ import (
 
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
+	usagecaps "github.com/nextlevelbuilder/goclaw/internal/usage/caps"
 )
 
 // IntentType represents the classified intent of a user message.
@@ -38,6 +39,23 @@ Respond with ONLY the category name, nothing else.`
 var cancelKeywords = []string{
 	"stop", "cancel", "abort", "thôi", "dừng", "hủy", "取消", "停",
 	"nevermind", "never mind",
+}
+
+// exactCancelKeywords is a set of keywords that trigger immediate abort when
+// sent as the entire message (exact match, case-insensitive, trimmed).
+// Used by chat.send to auto-abort when user sends "stop" during an active run.
+var exactCancelKeywords = map[string]bool{
+	"stop": true, "cancel": true, "abort": true,
+	"thôi": true, "dừng": true, "hủy": true,
+	"取消": true, "停": true,
+	"nevermind": true, "never mind": true,
+}
+
+// IsExactCancelKeyword returns true if the message is an exact cancel keyword
+// (case-insensitive, whitespace-trimmed). Used by chat.send to auto-abort
+// running agent loops when user explicitly sends a stop command.
+func IsExactCancelKeyword(msg string) bool {
+	return exactCancelKeywords[strings.ToLower(strings.TrimSpace(msg))]
 }
 
 // quickClassify attempts keyword-based classification for ultra-short messages
@@ -91,6 +109,10 @@ func containsWholeWord(s, kw string) bool {
 // Uses keyword fast-path first, then falls back to LLM classification.
 // Falls back to IntentNewTask on any error.
 func ClassifyIntent(ctx context.Context, provider providers.Provider, model, userMessage string) IntentType {
+	return ClassifyIntentWithUsageCaps(ctx, nil, provider, model, userMessage)
+}
+
+func ClassifyIntentWithUsageCaps(ctx context.Context, usageCaps *usagecaps.Service, provider providers.Provider, model, userMessage string) IntentType {
 	// Fast-path: keyword matching for obvious patterns (no LLM cost).
 	if intent, ok := quickClassify(userMessage); ok {
 		return intent
@@ -99,7 +121,7 @@ func ClassifyIntent(ctx context.Context, provider providers.Provider, model, use
 	ctx, cancel := context.WithTimeout(ctx, intentClassifyTimeout)
 	defer cancel()
 
-	resp, err := provider.Chat(ctx, providers.ChatRequest{
+	req := providers.ChatRequest{
 		Messages: []providers.Message{
 			{Role: "system", Content: intentSystemPrompt},
 			{Role: "user", Content: userMessage},
@@ -109,6 +131,11 @@ func ClassifyIntent(ctx context.Context, provider providers.Provider, model, use
 			providers.OptMaxTokens:   20,
 			providers.OptTemperature: 0.0,
 		},
+	}
+	resp, err := usageCaps.Chat(ctx, provider, req, usagecaps.ChatOptions{
+		ModelID:         model,
+		Purpose:         "intent-classify",
+		MaxOutputTokens: 20,
 	})
 	if err != nil {
 		return IntentNewTask

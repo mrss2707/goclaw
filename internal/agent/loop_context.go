@@ -45,7 +45,7 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	// Resolve merged tenant user identity for credential lookups.
 	// Keeps UserID unchanged (session/workspace scoping) but sets a separate
 	// CredentialUserID for SecureCLI, MCP, and other per-user features.
-	if l.userResolver != nil && req.UserID != "" {
+	if l.userResolver != nil && req.UserID != "" && store.ExplicitCredentialUserIDFromContext(ctx) == "" {
 		credUserID := l.resolveCredentialUserID(ctx, *req)
 		if credUserID != "" && credUserID != req.UserID {
 			ctx = store.WithCredentialUserID(ctx, credUserID)
@@ -66,6 +66,12 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	// Inject sender display name for bootstrap auto-contact
 	if req.SenderName != "" {
 		ctx = store.WithSenderName(ctx, req.SenderName)
+	}
+	// Inject caller role so RBAC-aware permission checks (CheckFileWriterPermission,
+	// CheckCronPermission) can bypass per-user grants for authenticated admins
+	// dispatched from dashboard or other trusted sources (#915).
+	if req.Role != "" {
+		ctx = store.WithRole(ctx, req.Role)
 	}
 	// Inject global + per-agent builtin tool settings (tier 1+3).
 	// Media/provider-chain tools read the merged view via BuiltinToolSettingsFromCtx.
@@ -102,6 +108,11 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	if l.memoryCfg != nil {
 		ctx = tools.WithMemoryConfig(ctx, l.memoryCfg)
 	}
+	var waitToolCfg *config.WaitToolPolicy
+	if l.agentToolPolicy != nil && l.agentToolPolicy.Wait != nil {
+		waitToolCfg = l.agentToolPolicy.Wait
+		ctx = tools.WithWaitToolConfig(ctx, waitToolCfg)
+	}
 	if l.sandboxCfg != nil {
 		ctx = tools.WithSandboxConfig(ctx, l.sandboxCfg)
 	}
@@ -113,8 +124,16 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	if req.WorkspaceChannel != "" {
 		ctx = tools.WithWorkspaceChannel(ctx, req.WorkspaceChannel)
 	}
-	if req.WorkspaceChatID != "" {
-		ctx = tools.WithWorkspaceChatID(ctx, req.WorkspaceChatID)
+	// WorkspaceChatID drives vault chat_id isolation in isolated teams. Callers
+	// that don't set it explicitly fall back to req.ChatID — the chat segment
+	// used for workspace path layering — so the vault filter activates uniformly
+	// across every RunRequest entry point (WS direct, HTTP, cron, subagent).
+	effectiveWorkspaceChatID := req.WorkspaceChatID
+	if effectiveWorkspaceChatID == "" {
+		effectiveWorkspaceChatID = req.ChatID
+	}
+	if effectiveWorkspaceChatID != "" {
+		ctx = tools.WithWorkspaceChatID(ctx, effectiveWorkspaceChatID)
 	}
 	if req.TeamTaskID != "" {
 		ctx = tools.WithTeamTaskID(ctx, req.TeamTaskID)
@@ -142,6 +161,9 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 		}
 		// Apply user isolation layer via pipeline.
 		shared := l.shouldShareWorkspace(req.UserID, req.PeerKind)
+		if shared {
+			ctx = store.WithSharedContext(ctx)
+		}
 		effectiveWorkspace := tools.ResolveWorkspace(ws,
 			tools.UserChatLayer(tools.SanitizePathSegment(req.UserID), shared),
 		)
@@ -155,7 +177,15 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 			ctx = store.WithSharedSessions(ctx)
 		}
 		if err := os.MkdirAll(effectiveWorkspace, 0755); err != nil {
-			slog.Warn("failed to create user workspace directory", "workspace", effectiveWorkspace, "user", req.UserID, "error", err)
+			// Stale stored workspace (e.g. Docker-era /app/workspace/ on bare-metal host)
+			// would propagate as cmd.Dir into exec tools, where Linux's clone+chdir+execve
+			// failure surfaces as a misleading "fork/exec PATH: no such file or directory"
+			// — same message users would see for a missing binary. Fall back to the system
+			// default workspace (already created at startup) so tools keep working while
+			// the warning surfaces the data drift for operators.
+			slog.Warn("failed to create user workspace directory; falling back to system default",
+				"workspace", effectiveWorkspace, "fallback", l.workspace, "user", req.UserID, "error", err)
+			effectiveWorkspace = l.workspace
 		}
 		ctx = tools.WithToolWorkspace(ctx, effectiveWorkspace)
 	} else if l.workspace != "" {
@@ -165,13 +195,27 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	// Team workspace: dispatched task overrides default workspace.
 	if req.TeamWorkspace != "" {
 		if err := os.MkdirAll(req.TeamWorkspace, 0755); err != nil {
-			slog.Warn("failed to create team workspace directory", "workspace", req.TeamWorkspace, "error", err)
+			// See note above on loop_context user workspace fallback. A broken
+			// req.TeamWorkspace would otherwise become cmd.Dir and surface as
+			// "fork/exec PATH: no such file or directory" from any tool exec.
+			slog.Warn("failed to create team workspace directory; keeping previous workspace",
+				"workspace", req.TeamWorkspace, "error", err)
+		} else {
+			ctx = tools.WithToolTeamWorkspace(ctx, req.TeamWorkspace)
+			ctx = tools.WithToolWorkspace(ctx, req.TeamWorkspace)
 		}
-		ctx = tools.WithToolTeamWorkspace(ctx, req.TeamWorkspace)
-		ctx = tools.WithToolWorkspace(ctx, req.TeamWorkspace)
 	}
 	if req.TeamID != "" {
 		ctx = tools.WithToolTeamID(ctx, req.TeamID)
+		// Team root for dispatched tasks: resolve the UserChatLayer-stripped root
+		// so the dispatched agent can still read peer-scoped files in the same team.
+		if teamUUID, err := uuid.Parse(req.TeamID); err == nil && l.dataDir != "" {
+			teamRoot := tools.ResolveWorkspace(l.dataDir,
+				tools.TenantLayer(store.TenantIDFromContext(ctx), store.TenantSlugFromContext(ctx)),
+				tools.TeamLayer(teamUUID),
+			)
+			ctx = tools.WithToolTeamRoot(ctx, teamRoot)
+		}
 	}
 	if req.LeaderAgentID != "" {
 		ctx = tools.WithLeaderAgentID(ctx, req.LeaderAgentID)
@@ -180,6 +224,15 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	// Team workspace: auto-resolve for agents with team membership (not dispatched).
 	// Lead agents default to team workspace; non-lead members keep own workspace.
 	var resolvedTeamSettings json.RawMessage
+	// Dispatched tasks already have TeamWorkspace set but still need team settings
+	// for TeamIsolated flag. Fetch by explicit TeamID in that branch.
+	if req.TeamWorkspace != "" && req.TeamID != "" && l.teamStore != nil {
+		if teamUUID, err := uuid.Parse(req.TeamID); err == nil {
+			if team, _ := l.teamStore.GetTeam(ctx, teamUUID); team != nil {
+				resolvedTeamSettings = team.Settings
+			}
+		}
+	}
 	if req.TeamWorkspace == "" && l.teamStore != nil && l.agentUUID != uuid.Nil {
 		if team, _ := l.teamStore.GetTeamForAgent(ctx, l.agentUUID); team != nil {
 			resolvedTeamSettings = team.Settings
@@ -195,9 +248,23 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 				tools.UserChatLayer(wsChat, shared),
 			)
 			if err := os.MkdirAll(wsDir, 0750); err != nil {
-				slog.Warn("failed to create team workspace directory", "workspace", wsDir, "error", err)
+				// See note above on loop_context user workspace fallback. Skip the
+				// team workspace context-set so downstream tools don't inherit a
+				// path that would fail with a misleading "fork/exec PATH: ENOENT".
+				slog.Warn("failed to create team workspace directory; skipping team workspace ctx",
+					"workspace", wsDir, "error", err)
+			} else {
+				ctx = tools.WithToolTeamWorkspace(ctx, wsDir)
 			}
-			ctx = tools.WithToolTeamWorkspace(ctx, wsDir)
+			// Team root (no UserChatLayer): lets any team agent — leader or member —
+			// read files produced by peers under different chat/user scopes within
+			// the same team. Writes still default to wsDir above; team root only
+			// widens the allowed-prefix set for path boundary checks.
+			teamRoot := tools.ResolveWorkspace(l.dataDir,
+				tools.TenantLayer(store.TenantIDFromContext(ctx), store.TenantSlugFromContext(ctx)),
+				tools.TeamLayer(team.ID),
+			)
+			ctx = tools.WithToolTeamRoot(ctx, teamRoot)
 			// Leader keeps personal workspace (set at line 110-132) as default.
 			// Team workspace accessible via ToolTeamWorkspaceFromCtx for delegation.
 			if req.TeamID == "" {
@@ -305,12 +372,14 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 		providerName = l.provider.Name()
 	}
 	// Extract resolved credential user ID (set earlier via WithCredentialUserID, empty if not resolved).
-	credUserID, _ := ctx.Value(store.CredentialUserIDKey).(string)
+	credUserID := store.ExplicitCredentialUserIDFromContext(ctx)
 	rc := &store.RunContext{
 		AgentID:             l.agentUUID,
 		AgentKey:            l.id,
 		TenantID:            l.tenantID,
 		UserID:              req.UserID,
+		RunID:               req.RunID,
+		SessionKey:          req.SessionKey,
 		CredentialUserID:    credUserID,
 		AgentType:           l.agentType,
 		SenderID:            req.SenderID,
@@ -318,20 +387,24 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 		SharedMemory:        store.IsSharedMemory(ctx),
 		SharedKG:            store.IsSharedKG(ctx),
 		SharedSessions:      store.IsSharedSessions(ctx),
+		SharedContext:       store.IsSharedContext(ctx),
 		RestrictToWorkspace: l.restrictToWs != nil && *l.restrictToWs,
 		BuiltinToolSettings: l.builtinToolSettings,
+		Channel:             req.Channel,
 		ChannelType:         req.ChannelType,
 		SubagentsCfg:        l.subagentsCfg,
 		ParentModel:         l.model,
 		ParentProvider:      providerName,
 		MemoryCfg:           l.memoryCfg,
 		SandboxCfg:          l.sandboxCfg,
+		WaitToolCfg:         waitToolCfg,
 		ShellDenyGroups:     l.shellDenyGroups,
 		Workspace:           tools.ToolWorkspaceFromCtx(ctx),
 		TeamWorkspace:       tools.ToolTeamWorkspaceFromCtx(ctx),
 		TeamID:              tools.ToolTeamIDFromCtx(ctx),
 		WorkspaceChannel:    req.WorkspaceChannel,
-		WorkspaceChatID:     req.WorkspaceChatID,
+		WorkspaceChatID:     effectiveWorkspaceChatID,
+		TeamIsolated:        resolvedTeamSettings != nil && !tools.IsSharedWorkspace(resolvedTeamSettings),
 		TeamTaskID:          req.TeamTaskID,
 		LeaderAgentID:       tools.LeaderAgentIDFromCtx(ctx),
 		AgentToolKey:        l.id,

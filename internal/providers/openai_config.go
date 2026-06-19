@@ -17,10 +17,12 @@ type OpenAIProvider struct {
 	providerType string // DB provider_type (e.g. "gemini_native", "openai", "minimax_native")
 	siteURL      string // optional site URL for provider identification (e.g. OpenRouter HTTP-Referer)
 	siteTitle    string // optional site title for provider identification (e.g. OpenRouter X-Title)
+	extraHeaders map[string]string // static headers set on every outgoing request (e.g. fixed User-Agent for kimi_coding)
 	client       *http.Client
 	retryConfig  RetryConfig
 	middlewares  RequestMiddleware // composed middleware chain (nil = no-op)
 	registry     ModelRegistry    // model resolution registry (nil = skip)
+	noAuthHeader bool             // when true, doRequest() skips setting Authorization (e.g. Vertex OAuth transport injects its own)
 }
 
 func NewOpenAIProvider(name, apiKey, apiBase, defaultModel string) *OpenAIProvider {
@@ -35,7 +37,7 @@ func NewOpenAIProvider(name, apiKey, apiBase, defaultModel string) *OpenAIProvid
 		apiBase:      apiBase,
 		chatPath:     "/chat/completions",
 		defaultModel: defaultModel,
-		client:       &http.Client{Timeout: DefaultHTTPTimeout},
+		client:       NewDefaultHTTPClient(),
 		retryConfig:  DefaultRetryConfig(),
 		middlewares:  ComposeMiddlewares(FastModeMiddleware, ServiceTierMiddleware, CacheMiddleware),
 	}
@@ -62,6 +64,36 @@ func (p *OpenAIProvider) WithSiteInfo(url, title string) *OpenAIProvider {
 	return p
 }
 
+// WithExtraHeaders sets static headers attached to every outgoing request.
+// Used by providers that require a fixed identity header (e.g. kimi_coding's
+// User-Agent: claude-code/0.1.0). Repeat calls merge — keys already present are
+// overwritten. Passing an empty map is a no-op.
+func (p *OpenAIProvider) WithExtraHeaders(h map[string]string) *OpenAIProvider {
+	if len(h) == 0 {
+		return p
+	}
+	if p.extraHeaders == nil {
+		p.extraHeaders = make(map[string]string, len(h))
+	}
+	for k, v := range h {
+		p.extraHeaders[k] = v
+	}
+	return p
+}
+
+// ExtraHeaders returns a copy of the static headers configured for this provider.
+// Used by adapter_openai.go to mirror the runtime request headers.
+func (p *OpenAIProvider) ExtraHeaders() map[string]string {
+	if len(p.extraHeaders) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(p.extraHeaders))
+	for k, v := range p.extraHeaders {
+		out[k] = v
+	}
+	return out
+}
+
 // WithRegistry sets the model registry for forward-compat resolution.
 func (p *OpenAIProvider) WithRegistry(r ModelRegistry) *OpenAIProvider {
 	p.registry = r
@@ -77,6 +109,21 @@ func (p *OpenAIProvider) WithMiddlewares(mws ...RequestMiddleware) *OpenAIProvid
 // WithProviderType sets the DB provider_type for correct API endpoint routing in media tools.
 func (p *OpenAIProvider) WithProviderType(pt string) *OpenAIProvider {
 	p.providerType = pt
+	return p
+}
+
+// WithHTTPClient overrides the default HTTP client. Used by Vertex to inject an oauth2.Transport.
+func (p *OpenAIProvider) WithHTTPClient(c *http.Client) *OpenAIProvider {
+	if c != nil {
+		p.client = c
+	}
+	return p
+}
+
+// WithoutAuthHeader disables the Authorization header in doRequest(). Used by Vertex where
+// the oauth2.Transport injects Authorization itself.
+func (p *OpenAIProvider) WithoutAuthHeader() *OpenAIProvider {
+	p.noAuthHeader = true
 	return p
 }
 

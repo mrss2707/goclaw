@@ -84,12 +84,14 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest, onChun
 	if err != nil {
 		return nil, err
 	}
-	defer respBody.Close()
+	// Wrap respBody so ctx cancellation closes the socket, unblocking bufio.Scanner.
+	cb := NewCtxBody(ctx, respBody)
+	defer cb.Close()
 
 	result := &ChatResponse{FinishReason: "stop"}
 	accumulators := make(map[int]*toolCallAccumulator)
 
-	sse := NewSSEScanner(respBody)
+	sse := NewSSEScanner(cb)
 	for sse.Next() {
 		data := sse.Data()
 
@@ -106,12 +108,18 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest, onChun
 				PromptTokens:     chunk.Usage.PromptTokens,
 				CompletionTokens: chunk.Usage.CompletionTokens,
 				TotalTokens:      chunk.Usage.TotalTokens,
+				RequestCount:     1,
 			}
 			if chunk.Usage.PromptTokensDetails != nil {
 				result.Usage.CacheReadTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+				result.Usage.CacheCreationTokens = chunk.Usage.PromptTokensDetails.CacheWriteTokens + chunk.Usage.PromptTokensDetails.CacheCreationInputTokens
+				result.Usage.PromptTokensIncludeCachedSegments = true
 			}
 			if chunk.Usage.CompletionTokensDetails != nil && chunk.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
 				result.Usage.ThinkingTokens = chunk.Usage.CompletionTokensDetails.ReasoningTokens
+			}
+			if chunk.Usage.ServerToolUse != nil {
+				result.Usage.WebSearchCount = chunk.Usage.ServerToolUse.WebSearchRequests
 			}
 		}
 
@@ -135,6 +143,22 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest, onChun
 			if onChunk != nil {
 				onChunk(StreamChunk{Content: delta.Content})
 			}
+		}
+
+		// Accumulate images from delta.images[].
+		// Each chunk may carry one or more image parts; we collect all into result.Images.
+		// Malformed data URLs are skipped with a warning — they don't abort the stream.
+		for _, img := range delta.Images {
+			mimeType, b64Data, err := parseDataURL(img.ImageURL.URL)
+			if err != nil {
+				slog.Warn("openai_stream: skipping malformed image data URL",
+					"type", img.Type, "url_len", len(img.ImageURL.URL), "error", err)
+				continue
+			}
+			result.Images = append(result.Images, ImageContent{
+				MimeType: mimeType,
+				Data:     b64Data,
+			})
 		}
 
 		// Accumulate streamed tool calls
@@ -163,7 +187,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, req ChatRequest, onChun
 
 	// Check for scanner errors (timeout, connection reset, etc.)
 	if err := sse.Err(); err != nil {
-		return nil, fmt.Errorf("%s: stream read error: %w", p.name, err)
+		return result, fmt.Errorf("%s: stream read error: %w", p.name, err)
 	}
 
 	// Parse accumulated tool call arguments

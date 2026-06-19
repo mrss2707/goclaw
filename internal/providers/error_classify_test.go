@@ -98,8 +98,8 @@ func TestClassifyHTTP500WithCapacity(t *testing.T) {
 func TestClassifyHTTP502BadGateway(t *testing.T) {
 	classifier := NewDefaultClassifier()
 	result := classifier.Classify(nil, 502, "Bad gateway")
-	if result.Reason != FailoverUnknown {
-		t.Errorf("expected FailoverUnknown for 502, got %s", result.Reason)
+	if result.Reason != FailoverServerError {
+		t.Errorf("expected FailoverServerError for 502, got %s", result.Reason)
 	}
 }
 
@@ -245,6 +245,15 @@ func TestClassifyHTTPErrorNonHTTPError(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTPErrorCodexSafetyRefusalString(t *testing.T) {
+	classifier := NewDefaultClassifier()
+	err := errors.New("codex: response failed: Invalid prompt: we've limited access to this content for safety reasons")
+	result := ClassifyHTTPError(classifier, err)
+	if result.Reason != FailoverContentPolicy {
+		t.Errorf("expected FailoverContentPolicy, got %s", result.Reason)
+	}
+}
+
 func TestClassifyHTTPErrorNil(t *testing.T) {
 	classifier := NewDefaultClassifier()
 	result := ClassifyHTTPError(classifier, nil)
@@ -285,6 +294,14 @@ func TestClassifyFormatInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestClassifyContentPolicyDataInspectionFailed(t *testing.T) {
+	classifier := NewDefaultClassifier()
+	result := classifier.Classify(nil, 400, `{"error":{"code":"data_inspection_failed","message":"Input text data may contain inappropriate content."}}`)
+	if result.Reason != FailoverContentPolicy {
+		t.Errorf("expected FailoverContentPolicy, got %s", result.Reason)
+	}
+}
+
 func TestClassifyHTTP401WithExpired(t *testing.T) {
 	classifier := NewDefaultClassifier()
 	result := classifier.Classify(nil, 401, "Token has expired")
@@ -320,7 +337,41 @@ func TestClassifyLowercaseInsensitive(t *testing.T) {
 func TestClassifyUnknownError(t *testing.T) {
 	classifier := NewDefaultClassifier()
 	result := classifier.Classify(nil, 500, "Unknown server error")
-	if result.Reason != FailoverUnknown {
-		t.Errorf("expected FailoverUnknown, got %s", result.Reason)
+	if result.Reason != FailoverServerError {
+		t.Errorf("expected FailoverServerError, got %s", result.Reason)
+	}
+}
+
+// Issue 958: New context overflow patterns for ZAI/GLM, DashScope, generic
+
+func TestClassifyPromptExceedsMaxLength(t *testing.T) {
+	classifier := NewDefaultClassifier()
+	result := classifier.Classify(nil, 400, `{"error":{"code":"1261","message":"Prompt exceeds max length"}}`)
+	if result.Kind != "context_overflow" {
+		t.Errorf("expected context_overflow, got %s (reason: %s)", result.Kind, result.Reason)
+	}
+}
+
+func TestClassifyInputTooLong(t *testing.T) {
+	classifier := NewDefaultClassifier()
+	result := classifier.Classify(nil, 400, "Input is too long for this model")
+	if result.Kind != "context_overflow" {
+		t.Errorf("expected context_overflow, got %s (reason: %s)", result.Kind, result.Reason)
+	}
+}
+
+func TestClassifyRequestTooLarge(t *testing.T) {
+	classifier := NewDefaultClassifier()
+	result := classifier.Classify(nil, 400, "request_too_large: payload exceeds limit")
+	if result.Kind != "context_overflow" {
+		t.Errorf("expected context_overflow, got %s (reason: %s)", result.Kind, result.Reason)
+	}
+}
+
+func TestClassifyChineseInputTooLong(t *testing.T) {
+	classifier := NewDefaultClassifier()
+	result := classifier.Classify(nil, 400, "请求输入过长")
+	if result.Kind != "context_overflow" {
+		t.Errorf("expected context_overflow, got %s (reason: %s)", result.Kind, result.Reason)
 	}
 }

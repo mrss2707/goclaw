@@ -13,11 +13,24 @@ type openAIChoice struct {
 }
 
 type openAIMessage struct {
-	Role             string           `json:"role"`
-	Content          string           `json:"content"`
-	ReasoningContent string           `json:"reasoning_content,omitempty"`
-	Reasoning        string           `json:"reasoning,omitempty"` // Ollama alias for reasoning_content
-	ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
+	Role             string            `json:"role"`
+	Content          string            `json:"content"`
+	ReasoningContent string            `json:"reasoning_content,omitempty"`
+	Reasoning        string            `json:"reasoning,omitempty"` // Ollama alias for reasoning_content
+	ToolCalls        []openAIToolCall  `json:"tool_calls,omitempty"`
+	Images           []openAIImagePart `json:"images,omitempty"`
+}
+
+// openAIImagePart represents an image entry in the images[] array returned by
+// OpenAI-compat endpoints that generate images (e.g. gpt-image-1 via chat completions).
+type openAIImagePart struct {
+	Type     string               `json:"type"`
+	ImageURL openAIImageURLObject `json:"image_url"`
+}
+
+// openAIImageURLObject holds the data URL (data:<mime>;base64,<b64>) for an image.
+type openAIImageURLObject struct {
+	URL string `json:"url"`
 }
 
 type openAIToolCall struct {
@@ -36,16 +49,24 @@ type openAIUsage struct {
 	PromptTokens            int                      `json:"prompt_tokens"`
 	CompletionTokens        int                      `json:"completion_tokens"`
 	TotalTokens             int                      `json:"total_tokens"`
+	Cost                    float64                  `json:"cost,omitempty"`
 	PromptTokensDetails     *openAIPromptDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *openAICompletionDetails `json:"completion_tokens_details,omitempty"`
+	ServerToolUse           *openAIServerToolUse     `json:"server_tool_use,omitempty"`
 }
 
 type openAIPromptDetails struct {
-	CachedTokens int `json:"cached_tokens"`
+	CachedTokens             int `json:"cached_tokens"`
+	CacheWriteTokens         int `json:"cache_write_tokens,omitempty"`          // some OpenAI-compat providers
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"` // DashScope/Qwen
 }
 
 type openAICompletionDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
+}
+
+type openAIServerToolUse struct {
+	WebSearchRequests int `json:"web_search_requests,omitempty"`
 }
 
 // Streaming types
@@ -65,6 +86,7 @@ type openAIStreamDelta struct {
 	ReasoningContent string                 `json:"reasoning_content,omitempty"`
 	Reasoning        string                 `json:"reasoning,omitempty"` // Ollama alias for reasoning_content
 	ToolCalls        []openAIStreamToolCall `json:"tool_calls,omitempty"`
+	Images           []openAIImagePart      `json:"images,omitempty"`
 }
 
 type openAIStreamToolCall struct {

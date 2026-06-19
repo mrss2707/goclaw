@@ -44,6 +44,39 @@ All HTTP-based providers (Anthropic, OpenAI-compatible, Codex) use 300-second ti
 
 ---
 
+## Agent Model Fallback
+
+Agents can define `model_fallback` as an ordered list of backup provider/model pairs. The agent's configured `provider` and `model` are always the primary route; fallback candidates are tried in UI order when the primary route returns a classifiable provider failure such as rate limit, overload, timeout, auth/billing failure, model-not-found, or unknown transport failure. Context overflow is not treated as fallback because it needs compaction, not a different model.
+
+Fallback is runtime-only and per agent. Explicit `ProviderOverride` or `ModelOverride` requests bypass the fallback wrapper so manual runs, heartbeats, or call sites that intentionally choose a model keep exact override behavior.
+
+Streaming fallback is conservative: backup models are tried only if the stream fails before any content, thinking, or image chunk is emitted.
+
+---
+
+## Usage Cap Pricing Enforcement
+
+Standard edition can enforce AI budget caps before billable provider dispatch. API-key providers use OpenRouter `/models` pricing as the catalog source, with optional tenant/provider/model overrides in the dashboard.
+
+Excluded provider classes:
+- `chatgpt_oauth`, `claude_cli`, and `bailian` are treated as subscription/non-API pricing in round one.
+- local/no-key subprocess providers such as `acp` and `ollama` are skipped unless a future feature explicitly enables pricing for them.
+
+Runtime flow:
+1. Resolve the stored provider by name and skip non-billable provider classes.
+2. Load matching policies for tenant, agent, provider, provider type, and model.
+3. Resolve custom pricing override first, then OpenRouter catalog pricing when a matching policy has a cost ceiling. Native provider model IDs are mapped to OpenRouter prefixes for common providers such as OpenAI, Anthropic, and Gemini.
+4. Reserve estimated tokens and cost atomically before each dispatch attempt.
+5. Reconcile reserved counters after the provider returns usage or after a failed call.
+
+Token-only policies do not require catalog pricing. Model fallback routes reserve against the actual candidate provider/model before each attempt. Cached input is separated from uncached input for OpenAI-compatible usage accounting. Partial stream failures keep the estimate, or actual provider usage when available, instead of clearing billed output to zero. Internal LLM calls for memory flush, compaction, media reading tools (`read_image`, `read_document`, `read_audio`, `read_video`), and subagents use the same preflight/reconcile path.
+
+The legacy agent-level `budget_monthly_cents` field is treated as a generated monthly agent USD cap. Existing values are backfilled during migration, and later agent budget edits update or remove the generated cap policy.
+
+Supported price units: input, output, cache read, cache write, reasoning, request, image, and web search.
+
+---
+
 ## 2. Supported Providers
 
 ### Six Core Provider Types
@@ -52,7 +85,7 @@ All HTTP-based providers (Anthropic, OpenAI-compatible, Codex) use 300-second ti
 |----------|------|----------|---------------|
 | **anthropic** | Native HTTP + SSE | API key required | `claude-sonnet-4-5-20250929` |
 | **claude_cli** | stdio subprocess + MCP | Binary path (default: `claude`) | `sonnet` |
-| **codex** | OAuth Responses API | OAuth token source | `gpt-5.3-codex` |
+| **codex** | OAuth Responses API | OAuth token source | `gpt-5.5` |
 | **acp** | JSON-RPC 2.0 subagents | Binary + workspace dir | `claude` |
 | **dashscope** | OpenAI-compat wrapper | API key + custom models | `qwen3-max` |
 | **openai** (+ 10+ variants) | OpenAI-compatible | API key + endpoint URL | Model-specific |
@@ -279,7 +312,7 @@ Extended thinking allows LLMs to generate internal reasoning tokens before produ
 
 ```mermaid
 flowchart TD
-    LEVEL["provider.settings.reasoning_defaults<br/>+ agent other_config.reasoning"] --> CHECK{"Provider<br/>supports thinking?"}
+    LEVEL["provider.settings.reasoning_defaults<br/>+ agent reasoning_config"] --> CHECK{"Provider<br/>supports thinking?"}
     CHECK -->|No| SKIP["Skip — normal request"]
     CHECK -->|Yes| TYPE{"Provider type?"}
 
@@ -318,6 +351,11 @@ Standard OpenAI-compatible provider targeting the Alibaba Coding API.
 
 - **Default model**: `qwen3.5-plus`
 - **Base URL**: `https://coding-intl.dashscope.aliyuncs.com/v1`
+- **Catalog source**: hardcoded because the Coding API does not expose a standard `/v1/models` endpoint
+
+| Model | Display name | Capabilities |
+|-------|--------------|--------------|
+| `qwen3.7-plus` | Qwen 3.7 Plus | Text Generation, Deep Thinking, Visual Understanding |
 
 ---
 
@@ -521,7 +559,7 @@ ClaudeCLIProvider can be configured in `config.json`:
 }
 ```
 
-Or via database `llm_providers` table with `provider_type = "claude_cli"`.
+Or via database `llm_providers` table with `provider_type = "claude_cli"`. For database providers, `api_base` is the CLI executable selector (`"claude"` or an absolute binary path), not an HTTP base URL, so provider URL SSRF opt-ins do not apply to Claude CLI.
 
 ### Session Management
 
@@ -561,7 +599,7 @@ Claude CLI inherits thinking support from the underlying Claude model. Thinking 
 
 ## 12. Codex Provider
 
-The Codex provider integrates with OpenAI's ChatGPT Responses API (OAuth-based), enabling access to gpt-5.3-codex model through the chatgpt.com backend. Unlike standard OpenAI endpoints, Codex uses OAuth token refresh and a custom response format with "phase" markers.
+The Codex provider integrates with OpenAI's ChatGPT Responses API (OAuth-based), defaulting to `gpt-5.5` through the chatgpt.com backend. Unlike standard OpenAI endpoints, Codex uses OAuth token refresh and a custom response format with "phase" markers.
 
 ### Configuration
 
@@ -572,7 +610,7 @@ tokenSource := &MyTokenSource{} // implements TokenSource interface
 provider := NewCodexProvider("codex", tokenSource, "", "")
 // or specify custom API base and model:
 provider := NewCodexProvider("codex", tokenSource,
-  "https://chatgpt.com/backend-api", "gpt-5.3-codex")
+  "https://chatgpt.com/backend-api", "gpt-5.5")
 ```
 
 ### API Endpoint
@@ -591,7 +629,7 @@ Codex returns structured responses with phase markers:
 ```json
 {
   "id": "...",
-  "model": "gpt-5.3-codex",
+  "model": "gpt-5.5",
   "choices": [{
     "message": {
       "role": "assistant",
@@ -668,12 +706,10 @@ Agent override example:
 ```json
 {
   "provider": "openai-codex",
-  "other_config": {
-    "reasoning": {
-      "override_mode": "custom",
-      "effort": "xhigh",
-      "fallback": "downgrade"
-    }
+  "reasoning_config": {
+    "override_mode": "custom",
+    "effort": "xhigh",
+    "fallback": "downgrade"
   }
 }
 ```
@@ -685,18 +721,18 @@ Routing behavior:
 - A provider listed in another pool cannot also manage its own pool.
 - `override_mode: "inherit"` uses the primary provider's `settings.codex_pool`.
 - `override_mode: "custom"` is limited to routing behavior for that provider-owned pool.
-- `primary_first` keeps the preferred account fixed. When saved as a custom override with no extra names, it disables the pool for that agent and keeps the agent on the primary account only.
 - `round_robin` rotates requests across the preferred account plus the provider-owned extra authenticated OpenAI Codex OAuth accounts.
 - `priority_order` tries the preferred account first, then drains the provider-owned extra accounts in order.
+- Legacy `primary_first` configs are read back as `priority_order`. Existing agent overrides that explicitly saved an empty `extra_provider_names` list still remain single-account-only after migration.
 - Retryable upstream failures can fall through to the next eligible OpenAI Codex OAuth account in the same request.
 - Explicit provider names remain explicit. OAuth auth/logout is still provider-scoped.
 - Runtime observability for one agent is available at `GET /v1/agents/{id}/codex-pool-activity`, which exposes recent routed traces plus per-alias health derived from those traces.
 
 Reasoning behavior:
 - `settings.reasoning_defaults` is provider-owned and reusable across agents.
-- `reasoning.override_mode: "inherit"` follows the provider default.
-- `reasoning.override_mode: "custom"` stores an agent-local reasoning policy.
-- Existing `reasoning` payloads without `override_mode` still behave as custom overrides.
+- `reasoning_config.override_mode: "inherit"` follows the provider default.
+- `reasoning_config.override_mode: "custom"` stores an agent-local reasoning policy.
+- Existing legacy `other_config.reasoning` payloads without `override_mode` still behave as custom overrides.
 - If no provider default is saved, inherit resolves to reasoning `off`.
 - Trace metadata surfaces the reasoning `source` so provider-default behavior is no longer implicit.
 
@@ -722,36 +758,14 @@ GoClaw v3 Wave 2 adds composable request middleware, error classification, per-m
 
 ## 14. File Reference
 
-| File | Purpose |
-|------|---------|
-| `internal/providers/middleware.go` | RequestMiddleware type, ComposeMiddlewares, ApplyMiddlewares (zero-alloc fast path) |
-| `internal/providers/middleware_cache.go` | CacheMiddleware for prompt caching |
-| `internal/providers/middleware_service_tier.go` | ServiceTierMiddleware for routing hints |
-| `internal/providers/error_classify.go` | ErrorClassifier, DefaultClassifier, 9 failover reasons, context overflow detection |
-| `internal/providers/cooldown.go` | CooldownTracker: per-model:provider failure state, reason-dependent durations, probe intervals |
-| `internal/providers/failover.go` | RunWithFailover[T]: 2-tier logic, profile rotation, model fallback, candidate exhaustion |
-| `internal/providers/model_registry.go` | ModelRegistry, ModelSpec, InMemoryRegistry, forward-compat resolver, seeded defaults |
-| `internal/providers/embedding_openai.go` | OpenAI embedding provider (text-embedding-3-small, 1536 dims, batch 2048) |
-| `internal/providers/embedding_voyage.go` | Voyage AI embedding provider |
-| `internal/providers/types.go` | Provider interface, ChatRequest, ChatResponse, Message, ToolCall, Usage types |
-| `internal/providers/anthropic.go` | Anthropic provider: native HTTP + SSE, request/response marshaling |
-| `internal/providers/anthropic_request.go` | Anthropic request builder: message formatting, tool schemas, system blocks |
-| `internal/providers/anthropic_stream.go` | Anthropic SSE event parsing and response accumulation |
-| `internal/providers/openai.go` | OpenAI-compatible provider: generic HTTP client for 10+ endpoints |
-| `internal/providers/openai_types.go` | OpenAI request/response types and message formatting |
-| `internal/providers/openai_gemini.go` | Gemini-specific compatibility: empty content handling, tool schema cleaning |
-| `internal/providers/claude_cli.go` | ClaudeCLIProvider: orchestrates local claude CLI binary via stdio |
-| `internal/providers/claude_cli_chat.go` | Chat/ChatStream implementation for CLI provider |
-| `internal/providers/claude_cli_session.go` | Session management: per-session state, history, workspace |
-| `internal/providers/claude_cli_mcp.go` | MCP configuration and server bridge for CLI provider |
-| `internal/providers/codex.go` | CodexProvider: OAuth-based ChatGPT Responses API |
-| `internal/providers/codex_build.go` | Codex request builder: message formatting, phase handling |
-| `internal/providers/dashscope.go` | DashScope provider: OpenAI-compat wrapper with thinking budget, tools+streaming fallback |
-| `internal/providers/acp_provider.go` | ACPProvider: orchestrates ACP-compatible agent subprocesses |
-| `internal/providers/retry.go` | RetryDo[T] generic function, RetryConfig, IsRetryableError, backoff computation |
-| `internal/providers/schema_cleaner.go` | CleanSchemaForProvider, CleanToolSchemas, recursive schema field removal |
-| `internal/providers/registry.go` | Provider registry: registration, lookup, lifecycle management |
-| `cmd/gateway_providers.go` | Provider registration from config and database during gateway startup |
+| Module | Path | Purpose |
+|---|---|---|
+| Provider implementations | `internal/providers/` | Anthropic, OpenAI-compatible, Claude CLI, Codex, ACP, DashScope providers; retry logic; schema cleaning; model registry; embedding providers |
+| Resilience middleware | `internal/providers/` | `middleware*.go`, `error_classify.go`, `cooldown.go`, `failover.go` — request middleware, error classification, 2-tier failover |
+| Provider interface & types | `internal/providers/types.go` | `Provider` interface, `ChatRequest`, `ChatResponse`, `Message`, `ToolCall`, `Usage` |
+| Gateway wiring | `cmd/gateway_providers.go` | Provider registration from config and database at startup |
+
+Use `grep` or your editor's symbol search for specific files.
 
 ---
 

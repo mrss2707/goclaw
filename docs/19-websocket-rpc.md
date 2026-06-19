@@ -106,6 +106,8 @@ Send a message to an agent and trigger execution.
 
 When `stream: true`, intermediate events are emitted: `chunk`, `tool.call`, `tool.result`, `run.started`, `run.completed`.
 
+Rapid text-only `chat.send` requests for the same user and session are debounced by `gateway.inbound_debounce_ms`: `0` means no debounce and positive values set the wait window. Agents can override the global value with `other_config.inbound_debounce_ms`; unset inherits the global config. The merged message keeps request params from the latest send and joins text with newlines. Cancel keywords bypass debounce and abort the active run immediately. Media sends bypass the wait window and drain any pending text into the same dispatch.
+
 ### `chat.history`
 
 Retrieve chat history for a session.
@@ -230,9 +232,55 @@ Delete an agent (admin only).
 | `sessions.patch` | Update label, model, metadata |
 | `sessions.delete` | Delete session |
 | `sessions.reset` | Clear session messages |
+| `run.timeline.get` | Get archived run/session timeline items |
 
 **`sessions.list` request:** `{agentId, limit, offset}`
 **Response:** `{sessions[], total, limit, offset}`
+
+### `run.timeline.get`
+
+Fetch display-safe timeline entries captured during agent runs. Pass `runId` for
+one run, or `sessionKey` for the session archive panel. At least one is
+required. `limit` defaults to `200` and is capped at `500`; `offset` paginates.
+Viewer role can read this method. Non-admin callers only receive entries whose
+`user_id` matches their connected user.
+
+**Request:**
+
+```json
+{
+  "runId": "run-123",
+  "sessionKey": "agent:demo:direct:user-1",
+  "limit": 100,
+  "offset": 0
+}
+```
+
+**Response:**
+
+```json
+{
+  "runId": "run-123",
+  "sessionKey": "agent:demo:direct:user-1",
+  "items": [{
+    "id": "019e...",
+    "run_id": "run-123",
+    "session_key": "agent:demo:direct:user-1",
+    "seq": 1,
+    "item_type": "assistant.message",
+    "status": "completed",
+    "title": "assistant",
+    "preview": "I will check that now.",
+    "created_at": "2026-05-29T10:00:00Z"
+  }],
+  "limit": 100,
+  "offset": 0
+}
+```
+
+Timeline items include `activity`, `assistant.message`, `tool.call`,
+`tool.result`, and `run.status`. Tool entries store bounded previews only;
+raw reasoning/thinking is not persisted.
 
 ---
 
@@ -501,6 +549,68 @@ Multi-tenant management (admin only).
 
 ---
 
+## 17.1. Voices (Voice Discovery)
+
+Discover available TTS voices for the tenant's configured provider.
+
+| Method | Description |
+|--------|-------------|
+| `voices.list` | Fetch available voices (in-memory cached, TTL 1h) |
+| `voices.refresh` | Force cache invalidation (admin-only) |
+
+### `voices.list` Request
+
+```json
+{
+  "method": "voices.list",
+  "id": 1
+}
+```
+
+**Response** (200 OK):
+```json
+{
+  "id": 1,
+  "result": [
+    {
+      "voice_id": "pMsXgVXv3BLzUgSXRplE",
+      "name": "Alice",
+      "preview_url": "https://...",
+      "category": "premade",
+      "labels": {
+        "use_case": "conversational",
+        "accent": "american"
+      }
+    }
+  ]
+}
+```
+
+**Errors:**
+- `code: -1`: Provider error (e.g., ElevenLabs API unreachable)
+- `code: -2`: Cache miss + no provider context available (desktop edition in Phase 2; HTTP handler resolves provider dynamically)
+
+### `voices.refresh` Request
+
+Admin-only. Invalidate tenant cache, forcing fresh fetch on next list.
+
+```json
+{
+  "method": "voices.refresh",
+  "id": 2
+}
+```
+
+**Response** (200 OK):
+```json
+{
+  "id": 2,
+  "result": { "message": "voice cache invalidated" }
+}
+```
+
+---
+
 ## 18. Browser Automation
 
 | Method | Description |
@@ -727,6 +837,7 @@ The server pushes events to connected clients via event frames. Key event types:
 | `chunk` | Streaming text chunk |
 | `tool.call` | Tool invocation started |
 | `tool.result` | Tool invocation completed |
+| `trace.status` | Trace status changed (cancelled, completed, error) |
 | `session.updated` | Session metadata changed |
 | `agent.updated` | Agent config changed |
 | `cron.fired` | Cron job triggered |
@@ -737,6 +848,7 @@ The server pushes events to connected clients via event frames. Key event types:
 
 | Event | Description | Payload |
 |-------|-------------|---------|
+| `trace.status` | Trace status changed (real-time stop/abort visibility) | `{traceId, status, endedAt?}` |
 | `evolution.metrics.updated` | New evolution metrics recorded | `{agentId, metricType, toolName, value}` |
 | `evolution.suggestion` | New evolution suggestion generated | `{agentId, suggestionId, type, title}` |
 | `episodic.summary` | New episodic summary created/updated | `{agentId, summaryId, userId}` |
@@ -745,47 +857,34 @@ The server pushes events to connected clients via event frames. Key event types:
 | `orchestration.mode.changed` | Agent orchestration mode changed | `{agentId, newMode}` |
 | `v3flags.changed` | V3 feature flags updated | `{agentId, flags}` |
 
+#### `trace.status` Event
+
+Emitted whenever a trace status changes (e.g., `running` → `cancelled`, `running` → `completed`). Allows UI to update trace state in real-time without polling, particularly critical for stop/abort operations.
+
+**Payload:**
+```json
+{
+  "traceId": "uuid",
+  "status": "cancelled",
+  "endedAt": "2026-04-14T12:34:56.789Z"
+}
+```
+
+**Status values:**
+- `cancelled` — User stopped the trace via `chat.abort`
+- `completed` — Trace finished successfully
+- `error` — Trace failed with an error
+- `running` — Emitted when trace transitions from another state (rare; mostly informational)
+
 ---
 
 ## File Reference
 
-| File | Purpose |
-|------|---------|
-| `internal/gateway/router.go` | Method dispatch + auth + connect handler |
-| `internal/gateway/client.go` | WebSocket client + frame reading |
-| `internal/gateway/server.go` | Server + mux setup |
-| `internal/gateway/methods/chat.go` | Chat send/history/abort/inject |
-| `internal/gateway/methods/agents.go` | Agent list/status |
-| `internal/gateway/methods/agents_create.go` | Agent creation |
-| `internal/gateway/methods/agents_update.go` | Agent update |
-| `internal/gateway/methods/agents_delete.go` | Agent deletion |
-| `internal/gateway/methods/agents_files.go` | Agent context files |
-| `internal/gateway/methods/agents_identity.go` | Agent identity |
-| `internal/gateway/methods/config.go` | Config get/apply/patch/schema |
-| `internal/gateway/methods/sessions.go` | Session CRUD |
-| `internal/gateway/methods/skills.go` | Skill list/get/update |
-| `internal/gateway/methods/cron.go` | Cron job management |
-| `internal/gateway/methods/channels.go` | Channel listing |
-| `internal/gateway/methods/channel_instances.go` | Channel instance CRUD |
-| `internal/gateway/methods/pairing.go` | Device pairing flow |
-| `internal/gateway/methods/teams.go` | Team list, create, get, delete, context methods |
-| `internal/gateway/methods/teams_crud.go` | Team CRUD operations |
-| `internal/gateway/methods/teams_members.go` | Team membership |
-| `internal/gateway/methods/teams_tasks.go` | Team task management |
-| `internal/gateway/methods/teams_workspace.go` | Team workspace |
-| `internal/gateway/methods/exec_approval.go` | Exec approval flow |
-| `internal/gateway/methods/agent_links.go` | Agent links management |
-| `internal/gateway/methods/tenants.go` | Tenant management |
-| `internal/gateway/methods/usage.go` | Usage records |
-| `internal/gateway/methods/quota_methods.go` | Quota consumption |
-| `internal/gateway/methods/api_keys.go` | API key management |
-| `internal/gateway/methods/send.go` | Outbound messaging |
-| `internal/gateway/methods/logs.go` | Log tailing |
-| `internal/gateway/methods/agent_evolution.go` | Evolution metrics + suggestions + apply + rollback |
-| `internal/gateway/methods/agent_episodic.go` | Episodic memory list + search |
-| `internal/gateway/methods/agent_vault.go` | Knowledge vault documents + search + links |
-| `internal/gateway/methods/agent_orchestration.go` | Orchestration mode info |
-| `internal/gateway/methods/agent_v3flags.go` | V3 feature flags get/update |
-| `internal/permissions/policy.go` | RBAC policy engine |
-| `pkg/protocol/methods.go` | Method name constants |
-| `pkg/protocol/events.go` | Event type constants (incl. v3 events) |
+| Module | Path | Purpose |
+|---|---|---|
+| Gateway core | `internal/gateway/router.go`, `internal/gateway/client.go`, `internal/gateway/server.go` | Method dispatch, auth, WebSocket client, server mux |
+| RPC method handlers | `internal/gateway/methods/` | One file per domain: chat, agents, config, sessions, skills, cron, channels, pairing, teams, exec_approval, agent_links, tenants, usage, api_keys, agent_evolution, agent_episodic, agent_vault, agent_orchestration, agent_v3flags |
+| Auth & permissions | `internal/permissions/policy.go` | RBAC policy engine, role derivation |
+| Wire protocol | `pkg/protocol/methods.go`, `pkg/protocol/events.go` | Method name constants, event type constants |
+
+Use `grep` or your editor's symbol search for specific files.

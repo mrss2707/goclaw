@@ -26,10 +26,12 @@ func (p *OpenAIProvider) doRequest(ctx context.Context, body any) (io.ReadCloser
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	// Azure OpenAI/Foundry support for now atleast
-	if strings.Contains(strings.ToLower(p.apiBase), "azure.com") {
+	switch {
+	case p.noAuthHeader:
+		// Caller-supplied transport (e.g. Vertex oauth2.Transport) injects Authorization itself.
+	case strings.Contains(strings.ToLower(p.apiBase), "azure.com"):
 		httpReq.Header.Set("api-key", p.apiKey)
-	} else {
+	default:
 		prefix := p.authPrefix
 		if prefix == "" {
 			prefix = "Bearer "
@@ -42,6 +44,11 @@ func (p *OpenAIProvider) doRequest(ctx context.Context, body any) (io.ReadCloser
 	}
 	if p.siteTitle != "" {
 		httpReq.Header.Set("X-Title", p.siteTitle)
+	}
+	// Static per-provider headers (e.g. fixed User-Agent for kimi_coding).
+	// Applied after the standard headers so providers can override them if needed.
+	for k, v := range p.extraHeaders {
+		httpReq.Header.Set(k, v)
 	}
 
 	resp, err := p.client.Do(httpReq)
@@ -100,6 +107,22 @@ func (p *OpenAIProvider) parseResponse(resp *openAIResponse) *ChatResponse {
 		if len(result.ToolCalls) > 0 && result.FinishReason != "length" {
 			result.FinishReason = "tool_calls"
 		}
+
+		// Decode images[] from the response message into ChatResponse.Images.
+		// Each entry carries a data URL (data:<mime>;base64,<b64>).
+		// Malformed entries are skipped with a warning to avoid crashing on partial responses.
+		for _, img := range msg.Images {
+			mimeType, b64Data, err := parseDataURL(img.ImageURL.URL)
+			if err != nil {
+				slog.Warn("openai: skipping malformed image data URL",
+					"type", img.Type, "url_len", len(img.ImageURL.URL), "error", err)
+				continue
+			}
+			result.Images = append(result.Images, ImageContent{
+				MimeType: mimeType,
+				Data:     b64Data,
+			})
+		}
 	}
 
 	if resp.Usage != nil {
@@ -107,12 +130,18 @@ func (p *OpenAIProvider) parseResponse(resp *openAIResponse) *ChatResponse {
 			PromptTokens:     resp.Usage.PromptTokens,
 			CompletionTokens: resp.Usage.CompletionTokens,
 			TotalTokens:      resp.Usage.TotalTokens,
+			RequestCount:     1,
 		}
 		if resp.Usage.PromptTokensDetails != nil {
 			result.Usage.CacheReadTokens = resp.Usage.PromptTokensDetails.CachedTokens
+			result.Usage.CacheCreationTokens = resp.Usage.PromptTokensDetails.CacheWriteTokens + resp.Usage.PromptTokensDetails.CacheCreationInputTokens
+			result.Usage.PromptTokensIncludeCachedSegments = true
 		}
 		if resp.Usage.CompletionTokensDetails != nil && resp.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
 			result.Usage.ThinkingTokens = resp.Usage.CompletionTokensDetails.ReasoningTokens
+		}
+		if resp.Usage.ServerToolUse != nil {
+			result.Usage.WebSearchCount = resp.Usage.ServerToolUse.WebSearchRequests
 		}
 	}
 

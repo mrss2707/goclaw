@@ -7,6 +7,7 @@ import (
 	"net"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -100,7 +101,8 @@ func registerProviders(registry *providers.Registry, cfg *config.Config, modelRe
 		if base == "" {
 			base = "https://coding-intl.dashscope.aliyuncs.com/v1"
 		}
-		registry.Register(providers.NewOpenAIProvider("bailian", cfg.Providers.Bailian.APIKey, base, "qwen3.5-plus"))
+		registry.Register(providers.NewOpenAIProvider("bailian", cfg.Providers.Bailian.APIKey, base, "qwen3.5-plus").
+			WithProviderType(store.ProviderBailian))
 		slog.Info("registered provider", "name", "bailian")
 	}
 
@@ -174,33 +176,32 @@ func registerProviders(registry *providers.Registry, cfg *config.Config, modelRe
 		slog.Info("registered provider", "name", "byteplus-coding")
 	}
 
-	// Claude CLI provider (subscription-based, no API key needed)
-	if cfg.Providers.ClaudeCLI.CLIPath != "" {
-		cliPath := cfg.Providers.ClaudeCLI.CLIPath
-		var opts []providers.ClaudeCLIOption
-		if cfg.Providers.ClaudeCLI.Model != "" {
-			opts = append(opts, providers.WithClaudeCLIModel(cfg.Providers.ClaudeCLI.Model))
+	// Google Cloud Vertex AI — OAuth2 service account or Application Default Credentials.
+	// Registers when project_id + region are set. Credential sources (priority order):
+	// inline JSON (APIKey) → file path (CredentialsFile) → ADC.
+	if cfg.Providers.Vertex.ProjectID != "" && cfg.Providers.Vertex.Region != "" {
+		vcfg := providers.VertexConfig{
+			Name:            "vertex",
+			CredentialsJSON: cfg.Providers.Vertex.APIKey,
+			CredentialsFile: cfg.Providers.Vertex.CredentialsFile,
+			ProjectID:       cfg.Providers.Vertex.ProjectID,
+			Region:          cfg.Providers.Vertex.Region,
+			DefaultModel:    cfg.Providers.Vertex.Model,
 		}
-		if cfg.Providers.ClaudeCLI.BaseWorkDir != "" {
-			opts = append(opts, providers.WithClaudeCLIWorkDir(cfg.Providers.ClaudeCLI.BaseWorkDir))
+		prov, err := providers.NewVertexProviderWithTimeout(vcfg)
+		if err != nil {
+			slog.Warn("vertex: initialization failed", "error", err)
+		} else {
+			registry.Register(prov)
+			slog.Info("registered provider", "name", "vertex", "region", cfg.Providers.Vertex.Region, "project", cfg.Providers.Vertex.ProjectID)
 		}
-		if cfg.Providers.ClaudeCLI.PermMode != "" {
-			opts = append(opts, providers.WithClaudeCLIPermMode(cfg.Providers.ClaudeCLI.PermMode))
-		}
-		// Build per-session MCP config: external MCP servers + GoClaw bridge
-		gatewayAddr := loopbackAddr(cfg.Gateway.Host, cfg.Gateway.Port)
-		mcpData := providers.BuildCLIMCPConfigData(cfg.Tools.McpServers, gatewayAddr, cfg.Gateway.Token)
-		opts = append(opts, providers.WithClaudeCLIMCPConfigData(mcpData))
-		// Enable GoClaw security hooks (shell deny patterns, path restrictions)
-		opts = append(opts, providers.WithClaudeCLISecurityHooks(
-			cfg.Providers.ClaudeCLI.BaseWorkDir, true))
-		registry.Register(providers.NewClaudeCLIProvider(cliPath, opts...))
-		slog.Info("registered provider", "name", "claude-cli")
 	}
+
+	registerClaudeCLIFromConfig(registry, cfg)
 
 	// ACP provider (config-based) — orchestrates any ACP-compatible agent binary
 	if cfg.Providers.ACP.Binary != "" {
-		registerACPFromConfig(registry, cfg.Providers.ACP)
+		registerACPFromConfig(registry, cfg.Providers.ACP, configuredShellDenyGroups(cfg))
 	}
 }
 
@@ -282,34 +283,12 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 			continue
 		}
 		if p.ProviderType == store.ProviderClaudeCLI {
-			cliPath := p.APIBase // reuse APIBase field for CLI path
-			if cliPath == "" {
-				cliPath = "claude"
-			}
-			// Validate: only accept "claude" or absolute path
-			if cliPath != "claude" && !filepath.IsAbs(cliPath) {
-				slog.Warn("security.claude_cli: invalid path from DB, using default", "path", cliPath)
-				cliPath = "claude"
-			}
-			if _, err := exec.LookPath(cliPath); err != nil {
-				slog.Warn("claude-cli: binary not found, skipping", "path", cliPath, "error", err)
-				continue
-			}
-			var cliOpts []providers.ClaudeCLIOption
-			cliOpts = append(cliOpts, providers.WithClaudeCLIName(p.Name))
-			cliOpts = append(cliOpts, providers.WithClaudeCLISecurityHooks("", true))
-			if gatewayAddr != "" {
-				mcpData := providers.BuildCLIMCPConfigData(nil, gatewayAddr, gatewayToken)
-				mcpData.AgentMCPLookup = buildMCPServerLookup(mcpStore)
-				cliOpts = append(cliOpts, providers.WithClaudeCLIMCPConfigData(mcpData))
-			}
-			registry.RegisterForTenant(p.TenantID, providers.NewClaudeCLIProvider(cliPath, cliOpts...))
-			slog.Info("registered provider from DB", "name", p.Name)
+			registerClaudeCLIFromDB(registry, p, gatewayAddr, gatewayToken, mcpStore, cfg)
 			continue
 		}
 		// ACP provider — no API key needed (agents manage their own auth).
 		if p.ProviderType == store.ProviderACP {
-			registerACPFromDB(registry, p)
+			registerACPFromDB(registry, p, configuredShellDenyGroups(cfg))
 			continue
 		}
 		// Local Ollama requires no API key — handle before the key guard (same pattern as ClaudeCLI).
@@ -321,6 +300,30 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 			}
 			registry.RegisterForTenant(p.TenantID, providers.NewOpenAIProvider(p.Name, "ollama", config.DockerLocalhost(host), "llama3.3"))
 			slog.Info("registered provider from DB", "name", p.Name)
+			continue
+		}
+		// Vertex supports ADC (empty api_key) — handle before the generic key guard.
+		if p.ProviderType == store.ProviderVertex {
+			vsettings := store.ParseVertexProviderSettings(p.Settings)
+			if vsettings == nil {
+				slog.Warn("vertex: missing project_id/region in settings, skipping", "name", p.Name)
+				continue
+			}
+			vcfg := providers.VertexConfig{
+				Name:            p.Name,
+				CredentialsJSON: p.APIKey,
+				ProjectID:       vsettings.ProjectID,
+				Region:          vsettings.Region,
+				DefaultModel:    vsettings.Model,
+				APIBaseOverride: p.APIBase,
+			}
+			prov, err := providers.NewVertexProviderWithTimeout(vcfg)
+			if err != nil {
+				slog.Warn("vertex: init from DB failed", "name", p.Name, "error", err)
+				continue
+			}
+			registry.RegisterForTenant(p.TenantID, prov)
+			slog.Info("registered provider from DB", "name", p.Name, "type", "vertex", "region", vsettings.Region)
 			continue
 		}
 
@@ -354,7 +357,8 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 			if base == "" {
 				base = "https://coding-intl.dashscope.aliyuncs.com/v1"
 			}
-			registry.RegisterForTenant(p.TenantID, providers.NewOpenAIProvider(p.Name, p.APIKey, base, "qwen3.5-plus"))
+			registry.RegisterForTenant(p.TenantID, providers.NewOpenAIProvider(p.Name, p.APIKey, base, "qwen3.5-plus").
+				WithProviderType(p.ProviderType))
 		case store.ProviderZai:
 			base := p.APIBase
 			if base == "" {
@@ -373,16 +377,6 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 				base = "https://ollama.com/v1"
 			}
 			registry.RegisterForTenant(p.TenantID, providers.NewOpenAIProvider(p.Name, p.APIKey, base, "llama3.3"))
-		case store.ProviderSuno:
-			// Suno is a media-only provider (music gen). Register as OpenAI-compat
-			// so credentialProvider interface works for API key/base extraction.
-			base := p.APIBase
-			if base == "" {
-				base = "https://api.sunoapi.org"
-			}
-			prov := providers.NewOpenAIProvider(p.Name, p.APIKey, base, "")
-			prov.WithProviderType(p.ProviderType)
-			registry.RegisterForTenant(p.TenantID, prov)
 		case store.ProviderNovita:
 			base := p.APIBase
 			if base == "" {
@@ -405,6 +399,19 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 			prov := providers.NewOpenAIProvider(p.Name, p.APIKey, base, store.BytePlusDefaultModel)
 			prov.WithProviderType(p.ProviderType)
 			registry.RegisterForTenant(p.TenantID, prov)
+		case store.ProviderKimiCoding:
+			// Moonshot Kimi Coding requires a fixed User-Agent on every request.
+			// OpenAI-compatible wire shape otherwise.
+			base := p.APIBase
+			if base == "" {
+				base = store.KimiCodingDefaultAPIBase
+			}
+			prov := providers.NewOpenAIProvider(p.Name, p.APIKey, base, store.KimiCodingDefaultModel)
+			prov.WithProviderType(p.ProviderType)
+			prov.WithExtraHeaders(map[string]string{
+				"User-Agent": store.KimiCodingRequiredUserAgent,
+			})
+			registry.RegisterForTenant(p.TenantID, prov)
 		default:
 			prov := providers.NewOpenAIProvider(p.Name, p.APIKey, p.APIBase, "")
 			prov.WithProviderType(p.ProviderType)
@@ -420,8 +427,59 @@ func registerProvidersFromDB(registry *providers.Registry, provStore store.Provi
 	}
 }
 
+func registerClaudeCLIFromConfig(registry *providers.Registry, cfg *config.Config) {
+	if cfg == nil || cfg.Providers.ClaudeCLI.CLIPath == "" {
+		return
+	}
+	cliPath := cfg.Providers.ClaudeCLI.CLIPath
+	var opts []providers.ClaudeCLIOption
+	if cfg.Providers.ClaudeCLI.Model != "" {
+		opts = append(opts, providers.WithClaudeCLIModel(cfg.Providers.ClaudeCLI.Model))
+	}
+	if cfg.Providers.ClaudeCLI.BaseWorkDir != "" {
+		opts = append(opts, providers.WithClaudeCLIWorkDir(cfg.Providers.ClaudeCLI.BaseWorkDir))
+	}
+	if cfg.Providers.ClaudeCLI.PermMode != "" {
+		opts = append(opts, providers.WithClaudeCLIPermMode(cfg.Providers.ClaudeCLI.PermMode))
+	}
+	gatewayAddr := loopbackAddr(cfg.Gateway.Host, cfg.Gateway.Port)
+	mcpData := providers.BuildCLIMCPConfigData(cfg.Tools.McpServers, gatewayAddr, cfg.Gateway.Token)
+	opts = append(opts, providers.WithClaudeCLIMCPConfigData(mcpData))
+	opts = append(opts, providers.WithClaudeCLISecurityHooks(
+		cfg.Providers.ClaudeCLI.BaseWorkDir, true, configuredShellDenyPatterns(cfg)))
+	registry.Register(providers.NewClaudeCLIProvider(cliPath, opts...))
+	slog.Info("registered provider", "name", "claude-cli")
+}
+
+func registerClaudeCLIFromDB(registry *providers.Registry, p store.LLMProviderData, gatewayAddr, gatewayToken string, mcpStore store.MCPServerStore, cfg *config.Config) bool {
+	cliPath := p.APIBase // reuse APIBase field for CLI path
+	if cliPath == "" {
+		cliPath = "claude"
+	}
+	// Validate: only accept "claude" or absolute path
+	if cliPath != "claude" && !filepath.IsAbs(cliPath) {
+		slog.Warn("security.claude_cli: invalid path from DB, using default", "path", cliPath)
+		cliPath = "claude"
+	}
+	if _, err := exec.LookPath(cliPath); err != nil {
+		slog.Warn("claude-cli: binary not found, skipping", "path", cliPath, "error", err)
+		return false
+	}
+	var cliOpts []providers.ClaudeCLIOption
+	cliOpts = append(cliOpts, providers.WithClaudeCLIName(p.Name))
+	cliOpts = append(cliOpts, providers.WithClaudeCLISecurityHooks("", true, configuredShellDenyPatterns(cfg)))
+	if gatewayAddr != "" {
+		mcpData := providers.BuildCLIMCPConfigData(nil, gatewayAddr, gatewayToken)
+		mcpData.AgentMCPLookup = buildMCPServerLookup(mcpStore)
+		cliOpts = append(cliOpts, providers.WithClaudeCLIMCPConfigData(mcpData))
+	}
+	registry.RegisterForTenant(p.TenantID, providers.NewClaudeCLIProvider(cliPath, cliOpts...))
+	slog.Info("registered provider from DB", "name", p.Name)
+	return true
+}
+
 // registerACPFromConfig registers an ACP provider from config file settings.
-func registerACPFromConfig(registry *providers.Registry, cfg config.ACPConfig) {
+func registerACPFromConfig(registry *providers.Registry, cfg config.ACPConfig, shellDenyGroups map[string]bool) {
 	if _, err := exec.LookPath(cfg.Binary); err != nil {
 		slog.Warn("acp: binary not found, skipping", "binary", cfg.Binary, "error", err)
 		return
@@ -444,13 +502,13 @@ func registerACPFromConfig(registry *providers.Registry, cfg config.ACPConfig) {
 		opts = append(opts, providers.WithACPPermMode(cfg.PermMode))
 	}
 	registry.Register(providers.NewACPProvider(
-		cfg.Binary, cfg.Args, workDir, idleTTL, tools.DefaultDenyPatterns(), opts...,
+		cfg.Binary, cfg.Args, workDir, idleTTL, tools.ResolveDenyPatterns(shellDenyGroups), opts...,
 	))
 	slog.Info("registered provider", "name", "acp", "binary", cfg.Binary)
 }
 
 // registerACPFromDB registers an ACP provider from a DB provider row.
-func registerACPFromDB(registry *providers.Registry, p store.LLMProviderData) {
+func registerACPFromDB(registry *providers.Registry, p store.LLMProviderData, shellDenyGroups map[string]bool) {
 	binary := p.APIBase // repurpose api_base as binary path
 	if binary == "" {
 		slog.Warn("acp: no binary specified in DB provider", "name", p.Name)
@@ -487,11 +545,22 @@ func registerACPFromDB(registry *providers.Registry, p store.LLMProviderData) {
 		workDir = defaultACPWorkDir()
 	}
 	registry.RegisterForTenant(p.TenantID, providers.NewACPProvider(
-		binary, settings.Args, workDir, idleTTL, tools.DefaultDenyPatterns(),
+		binary, settings.Args, workDir, idleTTL, tools.ResolveDenyPatterns(shellDenyGroups),
 		providers.WithACPName(p.Name),
 		providers.WithACPModel(p.Name),
 	))
 	slog.Info("registered provider from DB", "name", p.Name, "type", "acp")
+}
+
+func configuredShellDenyGroups(cfg *config.Config) map[string]bool {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.ShellDenyGroupsSnapshot()
+}
+
+func configuredShellDenyPatterns(cfg *config.Config) []*regexp.Regexp {
+	return tools.ResolveDenyPatterns(configuredShellDenyGroups(cfg))
 }
 
 // defaultACPWorkDir returns the default workspace directory for ACP agents.

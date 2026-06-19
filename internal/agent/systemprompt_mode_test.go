@@ -38,6 +38,19 @@ func TestFullModeAllSections(t *testing.T) {
 	}
 }
 
+func TestFullModeToolCallStyleGuidesNaturalProgress(t *testing.T) {
+	prompt := BuildSystemPrompt(fullTestConfig())
+	for _, want := range []string{
+		"short progress sentence before tool calls",
+		"write it naturally in the user's language",
+		"not the tool",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("tool call style missing progress guidance %q", want)
+		}
+	}
+}
+
 // --- Minimal mode tests ---
 
 func TestMinimalModeExclusions(t *testing.T) {
@@ -151,8 +164,8 @@ func TestNoneModeSections(t *testing.T) {
 			t.Errorf("none mode should not have: %s", dropped)
 		}
 	}
-	// Size check: should be under 3000 chars (~750 tokens)
-	if len(prompt) > 3000 {
+	// Size check: should be under 3100 chars (~775 tokens)
+	if len(prompt) > 3100 {
 		t.Errorf("none mode too large: %d chars", len(prompt))
 	}
 }

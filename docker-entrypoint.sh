@@ -7,7 +7,7 @@ RUNTIME_DIR="/app/data/.runtime"
 # Non-fatal: on first start with a fresh volume the directory may not be
 # writable yet (volume initialisation race on some Docker runtimes).
 # The app starts fine without .runtime; package installs will fail gracefully.
-mkdir -p "$RUNTIME_DIR/pip" "$RUNTIME_DIR/npm-global/lib" "$RUNTIME_DIR/pip-cache" || true
+mkdir -p "$RUNTIME_DIR/pip" "$RUNTIME_DIR/npm-global/lib" "$RUNTIME_DIR/pip-cache" "$RUNTIME_DIR/bin" || true
 
 # Fix .runtime ownership for split root/goclaw access.
 # .runtime itself must be root-owned so pkg-helper (root) can write apk-packages.
@@ -23,7 +23,7 @@ if [ "$(id -u)" = "0" ] && [ -d "$RUNTIME_DIR" ]; then
   if [ -n "${GOCLAW_RUN_GROUP:-}" ]; then
     chmod 0755 "$RUNTIME_DIR" 2>/dev/null || true
   fi
-  chown -R goclaw:goclaw "$RUNTIME_DIR/pip" "$RUNTIME_DIR/npm-global" "$RUNTIME_DIR/pip-cache" 2>/dev/null || true
+  chown -R goclaw:goclaw "$RUNTIME_DIR/pip" "$RUNTIME_DIR/npm-global" "$RUNTIME_DIR/pip-cache" "$RUNTIME_DIR/bin" 2>/dev/null || true
 fi
 
 # Fix workspace directory ownership: handle dirs created by root in previous
@@ -45,7 +45,7 @@ export PIP_CACHE_DIR="$RUNTIME_DIR/pip-cache"
 # NODE_PATH includes both pre-installed system globals and runtime-installed globals.
 export NPM_CONFIG_PREFIX="$RUNTIME_DIR/npm-global"
 export NODE_PATH="/usr/local/lib/node_modules:$RUNTIME_DIR/npm-global/lib/node_modules:${NODE_PATH:-}"
-export PATH="$RUNTIME_DIR/npm-global/bin:$RUNTIME_DIR/pip/bin:$PATH"
+export PATH="$RUNTIME_DIR/bin:$RUNTIME_DIR/npm-global/bin:$RUNTIME_DIR/pip/bin:$PATH"
 
 # System packages: re-install on-demand packages persisted across recreates.
 # After chown above, root owns .runtime and can create this file.

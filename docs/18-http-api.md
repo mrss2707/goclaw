@@ -11,7 +11,7 @@ Interactive documentation is available at `/docs` (Swagger UI) and the raw OpenA
 All HTTP endpoints (except `/health`) require authentication via Bearer token in the `Authorization` header:
 
 ```
-Authorization: Bearer <token>
+Authorization: Bearer <TOKEN>
 ```
 
 Two token types are accepted:
@@ -23,7 +23,7 @@ Two token types are accepted:
 
 API keys are hashed with SHA-256 before lookup — the raw key is never stored. See [20 — API Keys & Auth](20-api-keys-auth.md) for details.
 
-> Some endpoints accept the token as a query parameter `?token=<token>` for use in `<img>` and `<audio>` tags (e.g., `/v1/files/`, `/v1/media/`).
+> Some endpoints accept the token as a query parameter `?token=<TOKEN>` for use in `<img>` and `<audio>` tags (e.g., `/v1/files/`, `/v1/media/`).
 
 ### Common Headers
 
@@ -35,6 +35,39 @@ API keys are hashed with SHA-256 before lookup — the raw key is never stored. 
 | `X-GoClaw-Tenant-Id` | Tenant scope — UUID or slug (gateway token / cross-tenant API keys) |
 | `Accept-Language` | Locale (`en`, `vi`, `zh`) for i18n error messages |
 | `Content-Type` | `application/json` for request bodies |
+
+---
+
+## Browser Cookie Sync
+
+Selected-cookie sync stores user-approved browser cookies for server-side browser automation. Endpoints require operator auth and `X-GoClaw-User-Id`; the request body cannot set `tenant_id` or `user_id`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/browser/cookies/sync` | Store selected cookies for one `agent_id` |
+| `GET` | `/v1/browser/cookies?agent_id=...` | List synced cookie metadata; values are redacted |
+| `DELETE` | `/v1/browser/cookies?agent_id=...&domain=...&name=...` | Delete scoped synced cookies |
+
+Example sync request:
+
+```json
+{
+  "agent_id": "default",
+  "source": "chrome-selected-cookie-sync",
+  "cookies": [{
+    "domain": ".example.com",
+    "name": "session",
+    "path": "/",
+    "value": "cookie-value",
+    "secure": true,
+    "httpOnly": true,
+    "sameSite": "lax",
+    "expirationDate": 1770000000
+  }]
+}
+```
+
+See [Browser Cookie Sync Threat Model](browser-cookie-sync-threat-model.md) for isolation and encryption details.
 
 ---
 
@@ -95,6 +128,7 @@ CRUD operations for agent management. Requires `X-GoClaw-User-Id` header for mul
 | `GET` | `/v1/agents/{id}` | Get agent by ID or key | Bearer |
 | `PUT` | `/v1/agents/{id}` | Update agent (owner only) | Bearer |
 | `DELETE` | `/v1/agents/{id}` | Delete agent (owner only) | Bearer |
+| `POST` | `/v1/agents/sync-workspace` | Sync agent workspace files | Admin |
 
 ### Shares
 
@@ -110,6 +144,8 @@ CRUD operations for agent management. Requires `X-GoClaw-User-Id` header for mul
 |--------|------|-------------|
 | `POST` | `/v1/agents/{id}/regenerate` | Regenerate agent config with custom prompt |
 | `POST` | `/v1/agents/{id}/resummon` | Retry initial LLM summoning |
+| `POST` | `/v1/agents/{id}/cancel-summon` | Cancel an in-progress summon |
+| `GET` | `/v1/agents/{id}/system-prompt-preview` | Preview rendered system prompt |
 
 ### Predefined Agent Instances
 
@@ -117,7 +153,6 @@ CRUD operations for agent management. Requires `X-GoClaw-User-Id` header for mul
 |--------|------|-------------|
 | `GET` | `/v1/agents/{id}/instances` | List user instances |
 | `GET` | `/v1/agents/{id}/instances/{userID}/files` | List user context files |
-| `GET` | `/v1/agents/{id}/instances/{userID}/files/{fileName}` | Get specific user context file |
 | `PUT` | `/v1/agents/{id}/instances/{userID}/files/{fileName}` | Update user file (USER.md only) |
 | `PATCH` | `/v1/agents/{id}/instances/{userID}/metadata` | Update instance metadata |
 
@@ -138,20 +173,18 @@ POST /v1/agents/{id}/wake
 
 Response: `{content, run_id, usage?}`. Used by orchestrators (n8n, Paperclip) to trigger agent runs.
 
-### Codex/OpenAI OAuth Routing in `other_config`
+### Codex/OpenAI OAuth Routing in `chatgpt_oauth_routing`
 
-For agents whose main `provider` is a `chatgpt_oauth` provider, `other_config.chatgpt_oauth_routing`
+For agents whose main `provider` is a `chatgpt_oauth` provider, top-level `chatgpt_oauth_routing`
 can override or inherit routing behavior while keeping the main `provider` field as the preferred/default account alias.
 
 ```json
 {
   "provider": "openai-codex",
-  "model": "gpt-5.4",
-  "other_config": {
-    "chatgpt_oauth_routing": {
-      "override_mode": "custom",
-      "strategy": "round_robin"
-    }
+  "model": "gpt-5.5",
+  "chatgpt_oauth_routing": {
+    "override_mode": "custom",
+    "strategy": "round_robin"
   }
 }
 ```
@@ -162,10 +195,10 @@ Rules:
 - A provider listed in another pool cannot also manage its own pool.
 - `override_mode: "inherit"` tells the agent to follow those provider defaults.
 - `override_mode: "custom"` stores an agent-local routing override for that provider-owned pool.
-- `strategy: "primary_first"` keeps the main `provider` as the preferred account. When saved as a custom override with no extra names, it disables pooling for that agent.
 - Provider aliases are arbitrary. `openai-codex`, `codex-work`, and `codex-team` are examples, not required prefixes.
 - `strategy: "round_robin"` rotates requests across the main provider plus the provider-owned extra authenticated OpenAI Codex OAuth providers.
 - `strategy: "priority_order"` tries the main provider first, then drains the provider-owned extra providers in order.
+- Legacy `primary_first` payloads are normalized to `priority_order` on read. Existing agent overrides that explicitly saved `extra_provider_names: []` still remain single-account-only after migration.
 - Retryable upstream failures can fall through to the next eligible OpenAI Codex OAuth provider in the same request.
 - Only enabled and authenticated `chatgpt_oauth` providers participate.
 - Provider-scoped auth remains unchanged: `cmd/auth` and `/v1/auth/chatgpt/{provider}/*` still operate on explicit providers.
@@ -207,30 +240,28 @@ Rules:
 - the final runtime effort is still normalized against the agent's selected model capabilities
 - if no provider default is saved, inherit mode resolves to reasoning `off`
 
-### Agent reasoning policy in `other_config`
+### Agent reasoning policy in `reasoning_config`
 
-Agents can now store capability-aware GPT-5/Codex reasoning intent under `other_config.reasoning`.
+Agents can now store capability-aware GPT-5/Codex reasoning intent under top-level `reasoning_config`.
 
 ```json
 {
   "provider": "openai-codex",
-  "model": "gpt-5.4",
-  "other_config": {
-    "reasoning": {
-      "override_mode": "inherit"
-    }
+  "model": "gpt-5.5",
+  "reasoning_config": {
+    "override_mode": "inherit"
   }
 }
 ```
 
 Rules:
-- `reasoning.override_mode` supports `inherit|custom`
+- `reasoning_config.override_mode` supports `inherit|custom`
 - `override_mode: "inherit"` tells the agent to follow `settings.reasoning_defaults`
 - `override_mode: "custom"` stores an agent-local override; the dashboard also writes a derived `thinking_level` shim for rollback safety
 - `thinking_level` remains the coarse compatibility shim: `off|low|medium|high`
-- `reasoning.effort` supports `off|auto|none|minimal|low|medium|high|xhigh`
-- `reasoning.fallback` supports `downgrade|off|provider_default`
-- existing `reasoning` payloads without `override_mode` continue to behave as custom overrides
+- `reasoning_config.effort` supports `off|auto|none|minimal|low|medium|high|xhigh`
+- `reasoning_config.fallback` supports `downgrade|off|provider_default`
+- existing legacy `other_config.reasoning` payloads without `override_mode` continue to behave as custom overrides
 - unset reasoning resolves to `off`
 - the runtime may normalize unsupported efforts, and the actual decision is surfaced in trace span metadata
 
@@ -264,7 +295,7 @@ Query parameters:
 - `limit` optional, defaults to `18`, max `50`
 
 Response fields:
-- `strategy`: effective routing strategy (`primary_first`, `round_robin`, or `priority_order`)
+- `strategy`: effective routing strategy (`round_robin` or `priority_order`)
 - `pool_providers`: configured primary + extra provider aliases in pool order
 - `stats_sample_size`: number of recent routed `llm_call` spans used to derive runtime health. The server derives health from `max(limit, 120)` recent spans even when `recent_requests` is still capped by the requested `limit`.
 - `provider_counts`: per-alias routing evidence:
@@ -290,7 +321,7 @@ Use `direct_selection_count` plus the `selected_provider` sequence to verify rea
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/v1/skills` | List all skills |
-| `POST` | `/v1/skills/upload` | Upload ZIP with SKILL.md (20 MB limit) |
+| `POST` | `/v1/skills/upload` | Upload ZIP with SKILL.md (configurable 20 MB default, 1-500 MB range) |
 | `GET` | `/v1/skills/{id}` | Get skill details |
 | `PUT` | `/v1/skills/{id}` | Update skill metadata |
 | `DELETE` | `/v1/skills/{id}` | Delete skill (not system skills) |
@@ -298,7 +329,49 @@ Use `direct_selection_count` plus the `selected_provider` sequence to verify rea
 | `PUT` | `/v1/skills/{id}/tenant-config` | Set tenant-level skill config |
 | `DELETE` | `/v1/skills/{id}/tenant-config` | Delete tenant-level skill config |
 
+### Skill Self-Evolution
+
+Skill self-evolution is tenant-scoped and off by default per skill. Usage
+metrics are written only by trusted runtime paths such as `use_skill` tool
+execution and slash-command activation. There is no public usage-write endpoint.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/skills/{id}/evolution` | Read self-evolution settings for a skill |
+| `PATCH` | `/v1/skills/{id}/evolution` | Update enabled state or mode |
+| `GET` | `/v1/skills/{id}/metrics` | Read aggregate usage metrics and status counts |
+| `GET` | `/v1/skills/{id}/activity` | Read admin-only skill evolution activity |
+| `GET` | `/v1/skills/{id}/evolution/suggestions` | List skill-scoped improvement suggestions |
+| `POST` | `/v1/skills/{id}/evolution/suggestions` | Create a suggestion with evidence and draft patch |
+| `POST` | `/v1/skills/{id}/evolution/suggestions/{suggestionID}/approve` | Approve a suggestion |
+| `POST` | `/v1/skills/{id}/evolution/suggestions/{suggestionID}/reject` | Reject a suggestion |
+| `POST` | `/v1/skills/{id}/evolution/suggestions/{suggestionID}/apply` | Apply an approved suggestion to a new skill version |
+
+Supported modes:
+
+| Mode | Behavior |
+|------|----------|
+| `suggest_only` | Collect metrics and manage suggestions; no automatic patching |
+| `auto_analyze` | Reserved for analysis automation; patch application still requires explicit approval |
+
+Viewer/operator callers can read aggregate metrics. Raw activity details,
+actor IDs, failure evidence, draft patches, and suggestion apply actions remain
+admin-controlled. System skill mutation is blocked; custom skill suggestions
+write a new versioned directory and `skill_versions` record when applied.
+
 ### Skill Grants
+
+Skill upload size is enforced per ZIP file. The effective limit resolves in this order:
+tenant `system_configs["skills.max_upload_size_mb"]`, then `SKILL.md` frontmatter
+`max_upload_size_mb`, then config/env `skills.max_upload_size_mb` /
+`GOCLAW_SKILLS_MAX_UPLOAD_SIZE_MB`, then the default 20 MB. Values are clamped
+to 1-500 MB.
+
+Skill slash-command behavior is configured through tenant `system_configs`:
+`skills.slash_commands.enabled`, `skills.slash_commands.suggest_not_found`,
+`skills.slash_commands.partial_matching`, and `skills.slash_commands.prefix`.
+The default prefix is `/`; supported prompt forms are `/<slug> prompt`,
+`/use <slug-or-name> prompt`, `/list-skills`, and `/help <slug-or-name>`.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -333,6 +406,22 @@ Use `direct_selection_count` plus the `selected_provider` sequence to verify rea
 | `GET` | `/v1/skills/export` | Export skills bundle |
 | `POST` | `/v1/skills/import` | Import skills bundle |
 
+`GET /v1/skills/export` supports direct download and the existing SSE token flow:
+
+| Query | Description |
+|-------|-------------|
+| `stream=true` | Start the existing SSE export flow and return a temporary `download_url` |
+| `format=tar.gz\|tgz\|zip` | Archive format; defaults to `tar.gz`. `tgz` is an alias for gzip tar output |
+| `id=<uuid>` | Select one skill ID. Can be repeated for multiple selected skills |
+| `ids=<uuid>,<uuid>` | Select multiple skill IDs as a comma-separated list |
+| `include_system=true` | Include system skills in a full export when no selected IDs are provided |
+
+Without `id` or `ids`, export remains backward-compatible and includes tenant
+custom skills by default. Explicitly selected IDs may include system/core skills
+without `include_system=true`; tenant-scoped custom skills are still filtered by
+the request tenant. ZIP support is export/download only; the import endpoint
+continues to accept the existing skills bundle format.
+
 ---
 
 ## 6. Providers
@@ -346,6 +435,7 @@ LLM provider management. API keys are encrypted with AES-256-GCM in the database
 | `GET` | `/v1/providers/{id}` | Get provider |
 | `PUT` | `/v1/providers/{id}` | Update provider |
 | `DELETE` | `/v1/providers/{id}` | Delete provider |
+| `POST` | `/v1/providers/{id}/reconnect` | Reload provider runtime from stored config |
 
 ### Provider Verification & Models
 
@@ -358,7 +448,56 @@ LLM provider management. API keys are encrypted with AES-256-GCM in the database
 | `GET` | `/v1/embedding/status` | Check global embedding availability |
 | `GET` | `/v1/providers/claude-cli/auth-status` | Check Claude CLI login status |
 
+### Model Pricing
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/model-pricing/sync-openrouter` | Sync OpenRouter `/models` pricing catalog (master scope) |
+| `GET` | `/v1/model-pricing` | Search catalog models by `model` query |
+| `GET` | `/v1/model-pricing/overrides` | List tenant pricing overrides, optionally by `provider_id` |
+| `PUT` | `/v1/model-pricing/overrides` | Upsert provider/model custom pricing |
+| `DELETE` | `/v1/model-pricing/overrides/{id}` | Delete pricing override |
+
+Override body:
+
+```json
+{
+  "provider_id": "0193a5b0-7000-7000-8000-000000000123",
+  "provider_type": "openrouter",
+  "model_id": "anthropic/claude-sonnet-4-5",
+  "pricing": {
+    "input": "0.000003",
+    "output": "0.000015",
+    "cache_read": "0.0000003",
+    "cache_write": "0.00000375",
+    "reasoning": "0.000015",
+    "request": "0",
+    "image": "0",
+    "web_search": "0"
+  }
+}
+```
+
 **Supported types:** `anthropic_native`, `openai_compat`, `chatgpt_oauth`, `gemini_native`, `dashscope`, `bailian`, `minimax`, `claude_cli`, `acp`
+
+Reconnect response:
+
+```json
+{
+  "status": "reconnected",
+  "provider": {
+    "id": "0193a5b0-7000-7000-8000-000000000123",
+    "name": "openrouter-main",
+    "provider_type": "openai_compat",
+    "api_key": "***",
+    "enabled": true
+  },
+  "registry_updated": true,
+  "cache_invalidated": true
+}
+```
+
+`status` is `reconnected`, `disabled`, or `not_registered`. Reconnect never changes stored provider config. It does not run an upstream verify call; call `/v1/providers/{id}/verify` after reconnect when that check is needed.
 
 Example response:
 
@@ -366,11 +505,11 @@ Example response:
 {
   "models": [
     {
-      "id": "gpt-5.4",
-      "name": "GPT-5.4",
+      "id": "gpt-5.5",
+      "name": "GPT-5.5",
       "reasoning": {
         "levels": ["none", "low", "medium", "high", "xhigh"],
-        "default_effort": "none"
+        "default_effort": "medium"
       }
     },
     {
@@ -466,6 +605,7 @@ Per-user credential storage for MCP servers (e.g., API keys users provide for ex
 | `GET` | `/v1/tools/builtin` | List all built-in tools |
 | `GET` | `/v1/tools/builtin/{name}` | Get tool definition |
 | `PUT` | `/v1/tools/builtin/{name}` | Update enabled/settings |
+| `GET` | `/v1/tools/builtin/{name}/tenant-config` | Get tenant-level tool config |
 | `PUT` | `/v1/tools/builtin/{name}/tenant-config` | Set tenant-level tool config |
 | `DELETE` | `/v1/tools/builtin/{name}/tenant-config` | Delete tenant-level tool config |
 
@@ -492,6 +632,34 @@ Set `"dryRun": true` to return tool schema without execution.
 
 ---
 
+## 9. TTS
+
+Text-to-speech synthesis and configuration.
+
+### Synthesis & Connection
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/tts/synthesize` | Synthesize speech from text (operator role) |
+| `POST` | `/v1/tts/test-connection` | Test TTS provider connection (operator role) |
+
+### Configuration
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/tts/config` | Get tenant TTS configuration (admin) |
+| `POST` | `/v1/tts/config` | Save tenant TTS configuration (admin) |
+
+### Provider Capabilities
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/tts/capabilities` | Get `ProviderCapabilities` schema for all registered providers (operator role) |
+
+The capabilities endpoint returns the dynamic param schema for each provider — param types, ranges, defaults, `dependsOn` conditions, and custom feature flags. Used by the UI to render per-provider param editors without hard-coded field lists. See [`docs/tts-provider-capabilities.md`](tts-provider-capabilities.md) for schema details.
+
+---
+
 ## 10. Memory
 
 Per-agent vector memory using pgvector.
@@ -510,9 +678,119 @@ Per-agent vector memory using pgvector.
 
 Optional query parameter `?user_id=` for per-user scoping.
 
+`{agentID}` accepts either the agent UUID or `agent_key`; invalid IDs return a structured `INVALID_REQUEST`/`NOT_FOUND` response instead of surfacing storage parse errors.
+
 ---
 
-## 11. Knowledge Graph
+## 11. Sessions
+
+Read-only session listing is available over HTTP for automation clients.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/sessions` | List sessions with `agentId`/`agent_id`, `channel`, `limit`, and `offset` filters |
+| `POST` | `/v1/chat/sessions/{key}/branch` | Branch an existing chat session at `up_to_index` |
+| `GET` | `/v1/chat/sessions/{key}/history/follow` | Poll session history after an index cursor |
+
+Admins and system-level admin API keys can list all sessions within the resolved tenant. Non-admin callers must have an effective `X-GoClaw-User-Id` context and are filtered to their own sessions.
+
+Session branch request:
+
+```json
+{
+  "new_session_key": "optional agent:{sameAgentKey}:...",
+  "up_to_index": 12,
+  "label": "optional label",
+  "metadata": {}
+}
+```
+
+If `new_session_key` is omitted, the server generates `agent:{agentKey}:branch:direct:{uuid}`. `up_to_index` copies `messages[0:up_to_index]`; invalid ranges are rejected and existing target keys are not overwritten.
+
+History follow uses `cursor` as the count of already consumed messages:
+
+```
+GET /v1/chat/sessions/{key}/history/follow?cursor=12&limit=50
+```
+
+If `cursor > total`, the response sets `reset: true` and `next_cursor` to the current total.
+
+---
+
+## 12. Episodic Memory
+
+Episodic memory captures conversation summaries per user session for long-term context continuity.
+
+### List Episodic Summaries
+
+```
+GET /v1/agents/{agentID}/episodic
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `user_id` | string | Filter by user ID (optional). |
+| `limit` | integer | Max results (default: 20, max: 500). |
+| `offset` | integer | Pagination offset (default: 0). |
+
+**Response:**
+
+```json
+[
+  {
+    "id": "uuid",
+    "agent_id": "uuid",
+    "user_id": "user-123",
+    "summary": "User asked about deployment pipeline optimization. Discussed GitHub Actions, Docker layers, caching strategies. User implemented multi-stage builds.",
+    "key_entities": ["GitHub Actions", "Docker", "CI/CD"],
+    "sentiment": "positive",
+    "interaction_count": 5,
+    "tokens_exchanged": 4200,
+    "created_at": "2026-04-05T10:00:00Z",
+    "updated_at": "2026-04-05T11:30:00Z"
+  }
+]
+```
+
+### Search Episodic Summaries
+
+```
+POST /v1/agents/{agentID}/episodic/search
+```
+
+**Request:**
+
+```json
+{
+  "query": "Docker optimization strategies",
+  "user_id": "optional-user-id",
+  "max_results": 10,
+  "min_score": 0.5
+}
+```
+
+Runs hybrid search combining BM25 (keyword) and vector (semantic) matching.
+
+**Response:**
+
+```json
+[
+  {
+    "id": "uuid",
+    "agent_id": "uuid",
+    "user_id": "user-123",
+    "summary": "User asked about deployment pipeline optimization...",
+    "similarity_score": 0.92,
+    "created_at": "2026-04-05T10:00:00Z"
+  }
+]
+```
+
+---
+
+## 12. Knowledge Graph
 
 Per-agent entity-relation graph.
 
@@ -526,6 +804,7 @@ Per-agent entity-relation graph.
 | `POST` | `/v1/agents/{agentID}/kg/extract` | LLM-powered entity extraction |
 | `GET` | `/v1/agents/{agentID}/kg/stats` | Knowledge graph statistics |
 | `GET` | `/v1/agents/{agentID}/kg/graph` | Full graph for visualization |
+| `GET` | `/v1/agents/{agentID}/kg/graph/compact` | Compact graph optimized for 10k+ nodes |
 | `POST` | `/v1/agents/{agentID}/kg/dedup/scan` | Scan for duplicate entities |
 | `GET` | `/v1/agents/{agentID}/kg/dedup` | List dedup candidates |
 | `POST` | `/v1/agents/{agentID}/kg/merge` | Merge duplicate entities |
@@ -533,7 +812,282 @@ Per-agent entity-relation graph.
 
 ---
 
-## 12. Channels
+## 13. Knowledge Vault
+
+Persistent knowledge vault stores documents with vector embeddings and outbound/backlink graph connections.
+
+### Global Vault Operations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/vault/documents` | List all vault documents (cross-agent) |
+| `POST` | `/v1/vault/documents` | Create vault document |
+| `GET` | `/v1/vault/documents/{docID}` | Get document |
+| `PUT` | `/v1/vault/documents/{docID}` | Update document |
+| `DELETE` | `/v1/vault/documents/{docID}` | Delete document |
+| `GET` | `/v1/vault/documents/{docID}/links` | Get document outlinks and backlinks |
+| `POST` | `/v1/vault/links` | Create link between documents |
+| `DELETE` | `/v1/vault/links/{linkID}` | Delete link |
+| `POST` | `/v1/vault/links/batch` | Batch get links |
+| `POST` | `/v1/vault/upload` | Upload document file |
+| `POST` | `/v1/vault/rescan` | Rescan vault for FS sync |
+| `GET` | `/v1/vault/tree` | Get vault file tree |
+| `POST` | `/v1/vault/search` | Hybrid FTS+vector search (cross-agent) |
+| `GET` | `/v1/vault/enrichment/status` | Get enrichment pipeline status |
+| `POST` | `/v1/vault/enrichment/stop` | Stop enrichment pipeline |
+| `GET` | `/v1/vault/graph` | Get vault document relationship graph |
+
+### Per-Agent Vault Operations
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/agents/{agentID}/vault/documents` | List agent vault documents |
+| `GET` | `/v1/agents/{agentID}/vault/documents/{docID}` | Get agent document |
+| `POST` | `/v1/agents/{agentID}/vault/documents` | Create agent document |
+| `PUT` | `/v1/agents/{agentID}/vault/documents/{docID}` | Update agent document |
+| `DELETE` | `/v1/agents/{agentID}/vault/documents/{docID}` | Delete agent document |
+| `GET` | `/v1/agents/{agentID}/vault/documents/{docID}/links` | Get agent document links |
+| `POST` | `/v1/agents/{agentID}/vault/search` | Search agent vault documents |
+| `POST` | `/v1/agents/{agentID}/vault/links` | Create link for agent document |
+| `DELETE` | `/v1/agents/{agentID}/vault/links/{linkID}` | Delete agent document link |
+
+**Query Parameters (list):**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `scope` | string | Filter by scope (e.g., `team`, `user`, `global`). |
+| `doc_type` | string | Comma-separated doc types (e.g., `guide,reference,note`). |
+| `limit` | integer | Max results (default: 20, max: 500). |
+| `offset` | integer | Pagination offset. |
+| `agent_id` | string | (Cross-agent only) Filter by specific agent. |
+
+---
+
+## 14. Evolution Metrics & Suggestions
+
+Per-agent evolution metrics track tool usage, retrieval performance, and user feedback to drive automated agent improvements.
+
+### Get Evolution Metrics
+
+```
+GET /v1/agents/{agentID}/evolution/metrics
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `type` | string | no | Filter by metric type: `tool`, `retrieval`, `feedback`. Omit for all types. |
+| `aggregate` | boolean | no | Return aggregated metrics (grouped by tool/metric). Default: `false` (raw metrics). |
+| `since` | ISO 8601 | no | Start timestamp (default: 7 days ago). Example: `2026-04-01T00:00:00Z` |
+| `limit` | integer | no | Max results (default: 100, max: 500). |
+
+**Response (raw metrics):**
+
+```json
+[
+  {
+    "id": "uuid",
+    "agent_id": "uuid",
+    "metric_type": "tool",
+    "tool_name": "web_fetch",
+    "metric_key": "invocation_count",
+    "metric_value": 15,
+    "metadata": {"status": "success"},
+    "recorded_at": "2026-04-06T10:30:00Z"
+  }
+]
+```
+
+**Response (aggregated metrics):**
+
+```json
+{
+  "tool_aggregates": [
+    {
+      "tool_name": "web_fetch",
+      "invocation_count": 15,
+      "success_count": 14,
+      "failure_count": 1,
+      "avg_duration_ms": 2340
+    }
+  ],
+  "retrieval_aggregates": [
+    {
+      "query_count": 42,
+      "avg_recall": 0.78,
+      "avg_precision": 0.85,
+      "avg_relevance_score": 0.81
+    }
+  ]
+}
+```
+
+### List Evolution Suggestions
+
+```
+GET /v1/agents/{agentID}/evolution/suggestions
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `status` | string | Filter: `pending`, `approved`, `applied`, `rejected`, `rolled_back`. Omit for all. |
+| `limit` | integer | Max results (default: 50, max: 500). |
+
+**Response:**
+
+```json
+[
+  {
+    "id": "uuid",
+    "agent_id": "uuid",
+    "suggestion_type": "low_retrieval_usage",
+    "status": "pending",
+    "title": "Improve retrieval threshold",
+    "description": "Recent queries show low recall. Consider lowering retrieval_threshold from 0.5 to 0.4.",
+    "parameters": {
+      "current_threshold": 0.5,
+      "proposed_threshold": 0.4,
+      "confidence": 0.85
+    },
+    "created_at": "2026-04-06T09:00:00Z",
+    "reviewed_by": null,
+    "reviewed_at": null
+  }
+]
+```
+
+**Suggestion Types:**
+- `low_retrieval_usage` — Retrieval recall is below threshold for recent queries.
+- `tool_failure` — High failure rate detected for a tool.
+- `repeated_tool` — Tool called repeatedly without context change; candidate for skill.
+
+### Update Suggestion Status
+
+```
+PATCH /v1/agents/{agentID}/evolution/suggestions/{suggestionID}
+```
+
+**Request:**
+
+```json
+{
+  "status": "approved",
+  "reviewed_by": "optional-user-id"
+}
+```
+
+**Valid status transitions:** `pending` → `approved`, `rejected`, `rolled_back`.
+
+**Response:**
+
+```json
+{
+  "status": "ok"
+}
+```
+
+---
+
+## 15. Orchestration Mode
+
+Determines how an agent routes requests (standalone, delegation, team-based).
+
+### Get Agent Orchestration Mode
+
+```
+GET /v1/agents/{agentID}/orchestration
+```
+
+**Response:**
+
+```json
+{
+  "mode": "delegate",
+  "delegate_targets": [
+    {
+      "agent_key": "research-agent",
+      "display_name": "Research Specialist"
+    }
+  ],
+  "team": null
+}
+```
+
+Or in team mode:
+
+```json
+{
+  "mode": "team",
+  "delegate_targets": [],
+  "team": {
+    "id": "uuid",
+    "name": "Platform Team"
+  }
+}
+```
+
+**Mode values:**
+- `standalone` — No delegation. Agent handles all requests directly.
+- `delegate` — Routes complex requests to specialized agents (via agent links).
+- `team` — Routes to team members via task system.
+
+---
+
+## 16. V3 Feature Flags
+
+Per-agent feature flags control v3 system capabilities (evolution, episodic memory, vault, etc.).
+
+### Get V3 Flags
+
+```
+GET /v1/agents/{agentID}/v3-flags
+```
+
+**Response:**
+
+```json
+{
+  "evolution_enabled": true,
+  "episodic_enabled": true,
+  "vault_enabled": true,
+  "orchestration_enabled": false,
+  "skill_evolve": true,
+  "self_evolve": false
+}
+```
+
+### Update V3 Flags
+
+```
+PATCH /v1/agents/{agentID}/v3-flags
+```
+
+Accepts partial updates. Flag keys are validated against recognized v3 flags.
+
+**Request:**
+
+```json
+{
+  "evolution_enabled": true,
+  "episodic_enabled": false,
+  "vault_enabled": true
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "ok"
+}
+```
+
+---
+
+## 17. Channels
 
 ### Channel Instances
 
@@ -568,16 +1122,50 @@ Per-agent entity-relation graph.
 |--------|------|-------------|
 | `GET` | `/v1/channels/instances/{id}/writers/groups` | List group file writers |
 | `GET` | `/v1/channels/instances/{id}/writers` | List writers for group |
+| `POST` | `/v1/channels/instances/{id}/writers/test` | Test whether a user is a writer for a group |
 | `POST` | `/v1/channels/instances/{id}/writers` | Add writer to group |
 | `DELETE` | `/v1/channels/instances/{id}/writers/{userId}` | Remove writer |
+
+Writer test request:
+
+```json
+{
+  "group_id": "group:telegram:-100123",
+  "user_id": "386246614"
+}
+```
+
+Response includes `allowed`, `reason`, `instance_id`, `agent_id`, `group_id`, `user_id`, and `writer_count`. Stable reasons: `writer`, `not_writer`, `no_writers_configured`, `invalid_group`.
 
 **Supported channels:** `telegram`, `discord`, `slack`, `whatsapp`, `zalo_oa`, `zalo_personal`, `feishu`
 
 Credentials are masked in HTTP responses.
 
+### Passive Memory Extraction
+
+Tenant admins can configure and operate passive memory extraction per channel
+instance. Read endpoints are viewer-accessible; settings and item transitions
+require tenant admin.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/channels/instances/{id}/memory-extraction` | Get config, latest run, pending count, and recent items |
+| `PUT` | `/v1/channels/instances/{id}/memory-extraction/settings` | Replace normalized `passive_memory` config in the channel instance config |
+| `POST` | `/v1/channels/instances/{id}/memory-extraction/run` | Trigger a manual extraction run |
+| `GET` | `/v1/channels/instances/{id}/memory-extraction/items` | List review queue items; optional `status` filter |
+| `POST` | `/v1/channels/instances/{id}/memory-extraction/items/{itemID}/approve` | Write candidate to episodic memory and publish KG event |
+| `POST` | `/v1/channels/instances/{id}/memory-extraction/items/{itemID}/reject` | Reject candidate |
+| `DELETE` | `/v1/channels/instances/{id}/memory-extraction/items/{itemID}` | Delete candidate and linked episodic summary when present |
+
+Config fields: `enabled`, `review_mode`, `interval_minutes`, `message_cap`,
+`retention_hours`, `allowed_types`, `exclude_users`, `exclude_patterns`,
+`min_messages`, `group_only`. Defaults are disabled, review mode on, group-only,
+360 minute interval, 100 message cap, 168 hour retention, and durable types:
+people, projects, decisions, todos, preferences, events.
+
 ---
 
-## 13. Pending Messages
+## 18. Pending Messages
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -590,7 +1178,7 @@ Compaction runs in the background. Falls back to hard delete if no LLM provider 
 
 ---
 
-## 14. Team Events
+## 19. Team Events
 
 Team activity and audit trail.
 
@@ -600,21 +1188,59 @@ Team activity and audit trail.
 
 ---
 
-## 16. Secure CLI Credentials
+## 20. Secure CLI Credentials
 
-CLI authentication credentials for secure command execution. Requires **admin role** (full gateway token or empty gateway token in dev/single-user mode).
+CLI authentication credentials for secure command execution. Requires **admin role** (gateway token or empty-token local/dev fallback).
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/v1/cli-credentials` | List all credentials |
 | `POST` | `/v1/cli-credentials` | Create new credential |
+| `GET` | `/v1/cli-credentials/presets` | Get preset credential templates |
+| `POST` | `/v1/cli-credentials/check-binary` | Check binary availability |
 | `GET` | `/v1/cli-credentials/{id}` | Get credential details |
 | `PUT` | `/v1/cli-credentials/{id}` | Update credential |
 | `DELETE` | `/v1/cli-credentials/{id}` | Delete credential |
-| `GET` | `/v1/cli-credentials/presets` | Get preset credential templates |
 | `POST` | `/v1/cli-credentials/{id}/test` | Test credential connection (dry-run) |
 
+### Agent Credentials
+
+Agent credentials store PAT/SSH/env material for one CLI credential and one
+agent. They are the default git setup path; agent access controls who can cause
+the credential to be used. Responses return metadata only and never include raw
+typed token/key blobs.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/cli-credentials/{id}/agent-credentials` | List agent credentials for CLI cred |
+| `GET` | `/v1/cli-credentials/{id}/agent-credentials/{agentId}` | Get agent credential metadata |
+| `PUT` | `/v1/cli-credentials/{id}/agent-credentials/{agentId}` | Set agent credential |
+| `DELETE` | `/v1/cli-credentials/{id}/agent-credentials/{agentId}` | Delete agent credential |
+
+Typed git request body:
+
+```json
+{
+  "credential_type": "pat",
+  "host_scope": "github.com",
+  "blob": { "token": "ghp_..." }
+}
+```
+
+Env request body:
+
+```json
+{
+  "env": {
+    "GH_TOKEN": { "kind": "sensitive", "value": "..." }
+  }
+}
+```
+
 ### Per-User Credentials
+
+Advanced personal overrides. These remain for backward compatibility and have
+higher runtime precedence than channel/context and agent credentials.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -623,11 +1249,21 @@ CLI authentication credentials for secure command execution. Requires **admin ro
 | `PUT` | `/v1/cli-credentials/{id}/user-credentials/{userId}` | Set user credential |
 | `DELETE` | `/v1/cli-credentials/{id}/user-credentials/{userId}` | Delete user credential |
 
+### Agent Grants
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/cli-credentials/{id}/agent-grants` | List agent grants for CLI cred |
+| `POST` | `/v1/cli-credentials/{id}/agent-grants` | Create agent grant |
+| `GET` | `/v1/cli-credentials/{id}/agent-grants/{grantId}` | Get agent grant |
+| `PUT` | `/v1/cli-credentials/{id}/agent-grants/{grantId}` | Update agent grant |
+| `DELETE` | `/v1/cli-credentials/{id}/agent-grants/{grantId}` | Delete agent grant |
+
 ---
 
-## 17. Runtime & Packages Management
+## 21. Runtime & Packages Management
 
-Manage system (apk), Python (pip), and Node (npm) package installation in the GoClaw runtime container. These endpoints do not inspect host-level runtimes. Requires authentication. When `GOCLAW_GATEWAY_TOKEN` is empty (dev/single-user mode), all users get admin role and can manage packages.
+Manage system (apk), Python (pip), and Node (npm) package installation in the GoClaw runtime container. These endpoints do not inspect host-level runtimes. Requires authentication. Empty-token admin access is limited to loopback local development or explicit `GOCLAW_ALLOW_INSECURE_NO_AUTH=1`; external binds require `GOCLAW_GATEWAY_TOKEN`.
 
 ### List Installed Packages
 
@@ -697,15 +1333,6 @@ POST /v1/packages/uninstall
 
 Same format as install. System packages are removed from persist file and container state.
 
-**Response:**
-
-```json
-{
-  "ok": true,
-  "error": ""
-}
-```
-
 ### Check Runtime Availability
 
 ```
@@ -729,11 +1356,25 @@ Check which prerequisite runtimes are available inside the active GoClaw runtime
 }
 ```
 
-The published `ghcr.io/nextlevelbuilder/goclaw:latest` image is the minimal variant, so missing Python or Node runtimes can be expected there.
+### GitHub Releases
+
+```
+GET /v1/packages/github-releases
+```
+
+Lists available GoClaw GitHub release versions for the update checker.
+
+### Shell Deny Groups
+
+```
+GET /v1/shell-deny-groups
+```
+
+List shell command deny group patterns configured for the gateway.
 
 ---
 
-## 18. Traces & Costs
+## 22. Traces & Costs
 
 LLM call tracing and cost analysis.
 
@@ -742,10 +1383,101 @@ LLM call tracing and cost analysis.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/v1/traces` | List traces (paginated, filterable) |
+| `GET` | `/v1/traces/follow` | Poll trace changes for one session or agent |
 | `GET` | `/v1/traces/{traceID}` | Get trace with spans |
 | `GET` | `/v1/traces/{traceID}/export` | Export trace tree (gzipped JSON) |
+| `GET` | `/v1/runs/{runID}/timeline` | Get persisted run archive timeline items |
 
-**Filters:** `agent_id`, `user_id`, `session_key`, `status`, `channel`
+`GET /v1/traces` query params:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `q` | string | Contains search across trace ID, trace name, input/output previews, session key, raw channel, joined agent/channel labels, and span tool/input/output previews |
+| `agent_id` | UUID | Exact agent UUID filter |
+| `user_id` | string | Exact user filter; non-admin callers are always forced to their own user scope |
+| `session_key` | string | Exact session key filter |
+| `status` | string | Exact trace status filter |
+| `channel` | string | Exact raw channel filter |
+| `agent` | string | Contains search over joined agent display name and key |
+| `channel_query` | string | Contains search over tenant-scoped channel instance name, display name, and type |
+| `from` / `to` | RFC 3339 timestamp | Start-time range; `from` is inclusive, `to` is exclusive |
+| `min_input_tokens` / `max_input_tokens` | int | Input token range |
+| `min_output_tokens` / `max_output_tokens` | int | Output token range |
+| `min_tool_calls` / `max_tool_calls` | int | Tool-call count range |
+| `tool_name` | string | Contains search over span tool names |
+| `has_tool_calls` | boolean | Convenience filter for traces with or without tool calls |
+| `limit` | int | Page size, default 50, max 200 |
+| `offset` | int | Pagination offset |
+
+`GET /v1/traces/follow` requires `session_key` or `agent_id`. Query params: `session_key`, `agent_id`, `status`, `channel`, `since` (RFC 3339), `limit` (default 50, max 200), `include_spans` (default false). Non-admin callers only see their own traces. When `since` is provided, the server returns traces matching existing filters and `(created_at > since OR end_time > since OR status = "running")`.
+
+Follow response:
+
+```json
+{
+  "traces": [],
+  "spans_by_trace_id": {},
+  "server_time": "2026-05-20T11:23:00Z",
+  "next_since": "2026-05-20T11:23:00Z",
+  "limit": 50
+}
+```
+
+Main binary operator commands wrap the same endpoints:
+
+```bash
+goclaw traces list --query "provider fail" --status error
+goclaw traces get <trace-id> -o json
+goclaw traces export <trace-id> --file trace.json.gz
+goclaw traces follow --session <session-key>
+goclaw traces timeline <trace-id>
+```
+
+Remote gateways use the shared client overrides:
+
+```bash
+goclaw --server https://goclaw.example.com --token "$GOCLAW_GATEWAY_TOKEN" traces list -o json
+```
+
+The same `--server` / `--token` resolver is shared with WebSocket/RPC-backed
+admin commands. `GOCLAW_SERVER` or `GOCLAW_GATEWAY_URL` can provide the base URL
+when the flag is omitted.
+
+### Run Timeline
+
+`GET /v1/runs/{runID}/timeline` returns display-safe archive entries for one
+agent run. Optional query params: `session_key`, `limit` (default 200, max 500),
+and `offset`. Non-admin callers only receive entries owned by their effective
+`X-GoClaw-User-Id`.
+
+Timeline items are ordered by run sequence for `run_id` reads and include only
+safe previews for tool arguments/results. Raw thinking is not persisted.
+
+Example:
+
+```json
+{
+  "run_id": "run-123",
+  "session_key": "agent:demo:direct:user-1",
+  "items": [{
+    "id": "019e...",
+    "run_id": "run-123",
+    "session_key": "agent:demo:direct:user-1",
+    "seq": 2,
+    "item_type": "tool.call",
+    "status": "running",
+    "title": "web_fetch",
+    "preview": "{\"url\":\"https://example.com\"}",
+    "tool_name": "web_fetch",
+    "tool_call_id": "call_123",
+    "trace_id": "019e...",
+    "span_id": "019e...",
+    "created_at": "2026-05-29T10:00:00Z"
+  }],
+  "limit": 200,
+  "offset": 0
+}
+```
 
 ### Costs
 
@@ -755,29 +1487,62 @@ LLM call tracing and cost analysis.
 
 ---
 
-## 19. Usage & Analytics
+## 23. Usage & Analytics
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/v1/usage/timeseries` | Time-series usage points |
 | `GET` | `/v1/usage/breakdown` | Breakdown by provider/model/channel |
 | `GET` | `/v1/usage/summary` | Summary with period comparison |
+| `GET` | `/v1/usage-caps/policies` | List usage cap policies |
+| `POST` | `/v1/usage-caps/policies` | Create token/cost cap policy |
+| `PATCH` | `/v1/usage-caps/policies/{id}` | Update cap policy |
+| `DELETE` | `/v1/usage-caps/policies/{id}` | Delete cap policy |
+| `GET` | `/v1/usage-caps/utilization` | Current-window used and reserved counters |
+| `GET` | `/v1/usage-caps/events` | Recent allow/block/reconcile/skip events |
 
 **Query params:** `from`, `to` (RFC 3339), `agent_id`, `provider`, `model`, `channel`, `group_by`
 
 **Periods:** `24h`, `today`, `7d`, `30d`
 
+Usage cap policy body:
+
+```json
+{
+  "agent_id": "optional-agent-uuid",
+  "provider_id": "optional-provider-uuid",
+  "provider_type": "openrouter",
+  "model_id": "anthropic/claude-sonnet-4-5",
+  "window": "day",
+  "max_tokens": 500000,
+  "max_cost_usd": 25,
+  "enabled": true
+}
+```
+
+Policy responses include read-only `source`. `source="agent_budget_monthly_cents"` means the policy is generated from the agent monthly budget field and must be changed there; direct policy updates/deletes return `409 Conflict`.
+
 ---
 
-## 20. Activity & Audit
+## 24. Activity & Audit
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/v1/activity` | List activity audit logs (filterable) |
+| `GET` | `/v1/activity/aggregate` | Aggregate activity logs by action, actor type, entity type, or admin-only actor ID |
+| `GET` | `/v1/logs/runtime/aggregate` | Aggregate recent in-memory runtime logs by level or source |
+
+Activity aggregate query parameters:
+- `group_by`: `action`, `actor_type`, `entity_type`, or `actor_id` (admin only)
+- `from`, `to`: optional RFC3339 range, `from` inclusive and `to` exclusive
+- `actor_type`, `actor_id`, `action`, `entity_type`, `entity_id`: optional filters; non-admin callers are always scoped to their resolved user ID and must have user context
+- `limit`: bucket cap, default 50, max 200
+
+Runtime log aggregate is admin-only and ring-buffer based. It returns `retention=ring_buffer`, `capacity`, and `sample_size`; it is not durable log storage.
 
 ---
 
-## 21. Storage
+## 25. Storage
 
 Workspace file management.
 
@@ -786,7 +1551,7 @@ Workspace file management.
 | `GET` | `/v1/storage/files` | List files with depth limiting |
 | `GET` | `/v1/storage/files/{path...}` | Read file (JSON or raw) |
 | `POST` | `/v1/storage/files` | Upload file (admin) |
-| `DELETE` | `/v1/storage/files/{path...}` | Delete file/directory |
+| `DELETE` | `/v1/storage/files/{path...}` | Delete file/directory (admin) |
 | `PUT` | `/v1/storage/move` | Move/rename file (admin) |
 | `GET` | `/v1/storage/size` | Stream storage size (Server-Sent Events, cached 60 min) |
 
@@ -798,7 +1563,47 @@ Workspace file management.
 
 ---
 
-## 22. Media
+## 26. Voices & Audio
+
+Voice discovery for TTS providers (ElevenLabs). All endpoints are tenant-scoped and require tenant admin or operator role.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/voices` | List available voices (in-memory cached, TTL 1h) |
+| `POST` | `/v1/voices/refresh` | Force refresh voice cache (admin-only) |
+
+### `GET /v1/voices`
+
+**Response** (200 OK):
+```json
+[
+  {
+    "voice_id": "pMsXgVXv3BLzUgSXRplE",
+    "name": "Alice",
+    "preview_url": "https://...",
+    "category": "premade",
+    "labels": {
+      "use_case": "conversational",
+      "accent": "american"
+    }
+  }
+]
+```
+
+**Caching:** In-memory cached per tenant with TTL 1h. Cache miss triggers immediate fetch from provider.
+
+### `POST /v1/voices/refresh`
+
+Invalidate the voice cache for the current tenant, forcing a fresh fetch on the next request.
+
+**Response** (202 Accepted):
+```json
+{ "message": "voice cache invalidated" }
+```
+
+---
+
+## 27. Media
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -807,7 +1612,7 @@ Workspace file management.
 
 ---
 
-## 23. Files
+## 28. Files
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -818,7 +1623,7 @@ Auth via Bearer token or `?token=` query param (for `<img>` tags). MIME type aut
 
 ---
 
-## 24. API Keys
+## 29. API Keys
 
 Admin-only endpoints for managing gateway API keys. See [20 — API Keys & Auth](20-api-keys-auth.md) for the full authentication and authorization model.
 
@@ -856,7 +1661,7 @@ Admin-only endpoints for managing gateway API keys. See [20 — API Keys & Auth]
 
 ---
 
-## 25. OAuth
+## 30. OAuth
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -891,13 +1696,6 @@ Success payload:
       "remaining_percent": 76,
       "reset_after_seconds": 3600,
       "reset_at": "2026-03-24T20:15:00Z"
-    },
-    {
-      "label": "Secondary",
-      "used_percent": 38,
-      "remaining_percent": 62,
-      "reset_after_seconds": 604800,
-      "reset_at": "2026-03-31T19:15:00Z"
     }
   ],
   "core_usage": {
@@ -918,32 +1716,15 @@ Success payload:
 }
 ```
 
-Failure payload:
-
-```json
-{
-  "provider_name": "openai-codex",
-  "success": false,
-  "windows": [],
-  "error": "Quota metadata is missing for this account.",
-  "error_code": "missing_account_id",
-  "action_hint": "Sign in again so GoClaw can restore the ChatGPT account workspace metadata.",
-  "last_updated": "2026-03-24T19:15:00Z"
-}
-```
-
 Notes:
 - Invalid provider slugs return `400`.
-- Missing provider still returns `404`, and provider type conflicts still return `409`.
-- Missing quota metadata, expired workspace access, upstream `402`, upstream `403`, and upstream `429` return `200` with a structured failure payload so the dashboard can render actionable state inline.
-- `needs_reauth`, `is_forbidden`, and `retryable` are boolean hints for UI/state-machine handling.
+- Missing provider returns `404`, provider type conflicts return `409`.
+- Missing quota metadata, expired workspace access, upstream `402`/`403`/`429` return `200` with a structured failure payload.
 - `error_code` can be `missing_account_id`, `reauth_required`, `payment_required`, `quota_api_forbidden`, `quota_endpoint_not_found`, `rate_limited`, `provider_unavailable`, `network_timeout`, `network_error`, `quota_request_failed`, or `unknown_upstream_error`.
-- Failure payloads still include `windows: []` so clients can treat the envelope consistently.
-- `core_usage.five_hour` and `core_usage.weekly` are derived from upstream windows. When labels drift, GoClaw falls back to shortest-reset and longest-reset usage windows.
 
 ---
 
-## 26. Edition
+## 31. Edition
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -951,7 +1732,7 @@ Notes:
 
 ---
 
-## 27. Tenants
+## 32. Tenants
 
 Multi-tenant management (admin only).
 
@@ -967,7 +1748,7 @@ Multi-tenant management (admin only).
 
 ---
 
-## 28. System Configs
+## 33. System Configs
 
 Key-value system configuration store.
 
@@ -980,7 +1761,7 @@ Key-value system configuration store.
 
 ---
 
-## 29. Team Workspace & Attachments
+## 34. Team Workspace & Attachments
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -990,15 +1771,43 @@ Key-value system configuration store.
 
 ---
 
-## 30. Shell Deny Groups
+## 35. Backup & Restore
+
+System-level backup/restore endpoints (admin only). Stream progress via SSE.
+
+### System Backup
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/v1/shell-deny-groups` | List shell command deny group patterns |
+| `POST` | `/v1/system/backup` | Create system backup (streams SSE progress) |
+| `GET` | `/v1/system/backup/preflight` | Check backup prerequisites |
+| `GET` | `/v1/system/backup/download/{token}` | Download backup archive |
+| `POST` | `/v1/system/restore` | Restore from backup archive (streams SSE progress) |
+
+**Query params for restore:** `skip_db=true`, `skip_files=true`, `dry_run=true`
+
+### S3 Backup Integration
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/system/backup/s3/config` | Get S3 backup configuration |
+| `PUT` | `/v1/system/backup/s3/config` | Set S3 backup configuration |
+| `GET` | `/v1/system/backup/s3/list` | List S3 backup objects |
+| `POST` | `/v1/system/backup/s3/upload` | Upload backup to S3 |
+| `POST` | `/v1/system/backup/s3/backup` | Trigger S3 backup |
+
+### Tenant Backup
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/tenant/backup` | Create tenant-scoped backup |
+| `GET` | `/v1/tenant/backup/preflight` | Check tenant backup prerequisites |
+| `GET` | `/v1/tenant/backup/download/{token}` | Download tenant backup archive |
+| `POST` | `/v1/tenant/restore` | Restore tenant from backup |
 
 ---
 
-## 31. System
+## 36. System
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -1017,7 +1826,7 @@ Key-value system configuration store.
 
 ---
 
-## 32. MCP Bridge
+## 37. MCP Bridge
 
 Exposes GoClaw tools to Claude CLI via streamable HTTP at `/mcp/bridge`. Only listens on localhost. Protected by gateway token with HMAC-signed context headers.
 
@@ -1060,73 +1869,20 @@ Error messages are localized based on the `Accept-Language` header. HTTP status 
 
 The following operations are **only available via WebSocket RPC**, not HTTP:
 
-- **Sessions:** List, preview, patch, delete, reset (use WebSocket method `sessions.*`)
+- **Sessions:** Preview, patch, delete, reset (use WebSocket method `sessions.*`; HTTP supports read-only list)
 - **Cron jobs:** List, create, update, delete, logs (use WebSocket method `cron.*`)
 - **Send messages:** Send to channels (use WebSocket method `send.*`)
 - **Config management:** Get, apply, patch (use WebSocket method `config.*`)
-- **Delegations:** List, get delegation history (use WebSocket method `delegations.*`) — _not currently registered as WS methods either; may be removed_
 
 These endpoints require an active WebSocket connection to the `/ws` endpoint with proper authentication and agent context.
 
 ---
 
-## Notes on V3 Endpoints
+## Module Reference
 
-GoClaw v3 introduces new HTTP endpoints for agent evolution metrics, episodic memory, knowledge vault, and orchestration. These are documented separately in [22 — V3 HTTP Endpoints](22-v3-http-endpoints.md) to keep this document focused on the core REST API. V3 endpoints follow the same authentication, error handling, and header conventions as documented above.
-
----
-
-## File Reference
-
-| File | Purpose |
-|------|---------|
-| `internal/http/chat_completions.go` | OpenAI-compatible chat API |
-| `internal/http/responses.go` | OpenResponses protocol |
-| `internal/http/agents.go` | Agent CRUD + shares + instances + files |
-| `internal/http/skills.go` | Skill management + grants + versions |
-| `internal/http/providers.go` | Provider CRUD + verification + models |
-| `internal/http/mcp.go` | MCP server management + grants + requests |
-| `internal/http/builtin_tools.go` | Built-in tool management |
-| `internal/http/tools_invoke.go` | Direct tool invocation |
-| `internal/http/channel_instances.go` | Channel instance management + contacts |
-| `internal/http/memory_handlers.go` | Memory document management + search + indexing |
-| `internal/http/knowledge_graph.go` | Knowledge graph API (entities, relations, traversal) |
-| `internal/http/traces.go` | LLM trace listing + export |
-| `internal/http/usage.go` | Usage analytics + costs |
-| `internal/http/activity.go` | Activity audit log |
-| `internal/http/storage.go` | Workspace file management + size calculation |
-| `internal/http/media_upload.go` | Media file upload |
-| `internal/http/media_serve.go` | Media file serving |
-| `internal/http/files.go` | Workspace file serving |
-| `internal/http/api_keys.go` | API key management + revoke |
-| `internal/http/team_events.go` | Team event history API |
-| `internal/http/team_attachments.go` | Team attachment downloads |
-| `internal/http/workspace_upload.go` | Team workspace upload + move |
-| `internal/http/secure_cli.go` | CLI credential management |
-| `internal/http/packages.go` | Runtime package management (apk/pip/npm) |
-| `internal/http/pending_messages.go` | Pending message groups + compaction |
-| `internal/http/oauth.go` | OAuth authentication flows |
-| `internal/http/openapi.go` | OpenAPI spec + Swagger UI |
-| `internal/http/auth.go` | Authentication helpers |
-| `internal/gateway/server.go` | HTTP mux and route wiring |
-| `cmd/gateway.go` | Handler instantiation and wiring |
-| `cmd/pkg-helper/main.go` | Root-privileged system package helper (apk add/del) |
-| `internal/skills/package_lister.go` | Query installed packages from apk/pip3/npm |
-| `internal/http/edition.go` | Edition info endpoint |
-| `internal/http/system_configs.go` | System config key-value store |
-| `internal/http/tenants.go` | Multi-tenant management |
-| `internal/http/mcp_user_credentials.go` | MCP per-user credentials |
-| `internal/http/mcp_export.go` | MCP export |
-| `internal/http/mcp_import.go` | MCP import |
-| `internal/http/skills_export.go` | Skills export |
-| `internal/http/skills_import.go` | Skills import |
-| `internal/http/agents_export.go` | Agent export |
-| `internal/http/agents_import.go` | Agent import |
-| `internal/http/contact_merge_handlers.go` | Contact merge/unmerge |
-| `internal/http/user_search.go` | User search |
-| `internal/http/secure_cli_user_credentials.go` | CLI per-user credentials |
-| `internal/http/evolution_handlers.go` | V3: Evolution metrics + suggestions endpoints |
-| `internal/http/episodic_handlers.go` | V3: Episodic memory list + search endpoints |
-| `internal/http/vault_handlers.go` | V3: Vault document + link endpoints |
-| `internal/http/orchestration_handlers.go` | V3: Orchestration mode info endpoint |
-| `internal/http/v3_flags_handlers.go` | V3: Feature flag get/toggle endpoints |
+| Module | Path | Purpose |
+|--------|------|---------|
+| Auth & Routing | `internal/http/`, `internal/gateway/` | Auth middleware, RBAC, request routing, MCP bridge |
+| Chat, Agents & Skills | `internal/http/chat_completions.go`, `agents*.go`, `skills*.go`, `wake.go` | Conversational endpoints, agent CRUD, skill management |
+| Memory, Vault & Knowledge | `internal/http/memory.go`, `vault_handlers*.go`, `knowledge_graph.go`, `episodic_handlers.go` | Persistent knowledge, vector memory, document graph |
+| Evolution, Orchestration & Flags | `internal/http/evolution_handlers.go`, `orchestration_handlers.go`, `v3_flags_handlers.go` | v3 runtime control, metrics, suggestions, feature flags |

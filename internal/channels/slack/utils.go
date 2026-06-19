@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"regexp"
 	"time"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
+	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -24,7 +26,10 @@ func (c *Channel) HandleMessage(senderID, chatID, content string, mediaPaths []s
 
 	var mediaFiles []bus.MediaFile
 	for _, p := range mediaPaths {
-		mediaFiles = append(mediaFiles, bus.MediaFile{Path: p})
+		// Slack file API doesn't expose a separate original filename here — the
+		// downloaded temp file is already named after the Slack file name, so
+		// basename is the best source for persistMedia's sanitizer.
+		mediaFiles = append(mediaFiles, bus.MediaFile{Path: p, Filename: filepath.Base(p)})
 	}
 
 	// Collect contact for processed messages (DM + group-mentioned).
@@ -49,6 +54,9 @@ func (c *Channel) HandleMessage(senderID, chatID, content string, mediaPaths []s
 
 // BlockReplyEnabled returns the per-channel block_reply override.
 func (c *Channel) BlockReplyEnabled() *bool { return c.config.BlockReply }
+
+// ChatBehaviorConfig returns the per-channel chat_behavior override.
+func (c *Channel) ChatBehaviorConfig() *config.ChatBehaviorConfig { return c.config.ChatBehavior }
 
 // resolveDisplayName fetches and caches the Slack display name for a user ID.
 func (c *Channel) resolveDisplayName(userID string) string {

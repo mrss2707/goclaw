@@ -22,6 +22,7 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
       released: ${{ steps.version.outputs.version != '' }}
@@ -33,7 +34,6 @@ jobs:
       - name: Resolve version from tag
         id: version
         run: |
-          # Priority: workflow_dispatch input > pushed tag > latest tag on HEAD
           TAG="${{ inputs.tag || github.ref_name }}"
           if [[ -z "$TAG" || "$TAG" == "main" || "$TAG" == "dev" ]]; then
             TAG=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || echo "")
@@ -65,7 +65,9 @@ jobs:
     needs: release
     if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         include:
           - goos: linux
@@ -104,7 +106,7 @@ jobs:
           CGO_ENABLED=0 go build -tags embedui \
             -ldflags="-s -w -X github.com/nextlevelbuilder/goclaw/cmd.Version=${VERSION}" \
             -o goclaw .
-          tar -czf "goclaw-${{ needs.release.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" goclaw migrations/
+          tar -czf "goclaw-${{ needs.release.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" goclaw migrations/ skills/
 
       - name: Upload to release
         env:
@@ -119,6 +121,7 @@ jobs:
     needs: [release, build-binaries]
     if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Download all binary assets
         env:
@@ -146,42 +149,35 @@ jobs:
             --repo "${{ github.repository }}" \
             --clobber
 
-  # Build and push Docker images to GHCR + Docker Hub
-  docker-images:
+  # Build Docker images per (variant × platform) on native runners (no QEMU).
+  # Each job pushes a digest-only image; the merge job combines them into a
+  # multi-arch manifest and pushes the final tags to both GHCR and Docker Hub.
+  # Variants: base (backend only), latest (+ web UI + Python), full (+ all skills).
+  # OTel and Tailscale variants are not built — users build from source if needed.
+  docker-build:
     needs: release
     if: needs.release.outputs.released == 'true'
-    runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # Base: backend API-only, no web UI, no runtimes
           - variant: base
             suffix: "-base"
-            enable_otel: "false"
             enable_embedui: "false"
             enable_python: "false"
             enable_full_skills: "false"
-          # Latest: backend + embedded web UI + Python
           - variant: latest
             suffix: ""
-            enable_otel: "false"
             enable_embedui: "true"
             enable_python: "true"
             enable_full_skills: "false"
-          # Full: all runtimes + skills pre-installed
           - variant: full
             suffix: "-full"
-            enable_otel: "false"
             enable_embedui: "true"
             enable_python: "true"
             enable_full_skills: "true"
-          # OTel: latest + OpenTelemetry tracing
-          - variant: otel
-            suffix: "-otel"
-            enable_otel: "true"
-            enable_embedui: "true"
-            enable_python: "true"
-            enable_full_skills: "false"
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -223,18 +219,20 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            ENABLE_OTEL=${{ matrix.enable_otel }}
+            ENABLE_OTEL=false
             ENABLE_EMBEDUI=${{ matrix.enable_embedui }}
             ENABLE_PYTHON=${{ matrix.enable_python }}
             ENABLE_FULL_SKILLS=${{ matrix.enable_full_skills }}
             VERSION=v${{ needs.release.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.variant }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+          cache-from: type=gha,scope=release-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.variant }}
+          provenance: false
 
-  # Build and push web UI Docker image
-  docker-web:
+  # Build web UI Docker image.
+  docker-web-build:
     needs: release
     if: needs.release.outputs.released == 'true'
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -275,14 +273,16 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=web
-          cache-to: type=gha,mode=max,scope=web
+          cache-from: type=gha,scope=release-web
+          cache-to: type=gha,mode=max,scope=release-web
+          provenance: false
 
   # Notify Discord on new release (runs even if docker jobs fail)
   notify-discord:
-    needs: [release, build-binaries, docker-images, docker-web]
+    needs: [release, build-binaries, docker-build, docker-web-build]
     if: always() && needs.release.outputs.released == 'true' && !cancelled()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Send Discord notification
         env:

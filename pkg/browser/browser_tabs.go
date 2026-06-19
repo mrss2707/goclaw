@@ -70,10 +70,16 @@ func (m *Manager) ListTabs(ctx context.Context) ([]TabInfo, error) {
 // Pages are created within the tenant's incognito browser context for isolation.
 // If the tenant already has maxPages open, the oldest idle page is closed first.
 func (m *Manager) OpenTab(ctx context.Context, url string) (*TabInfo, error) {
+	scope := scopeFromCtx(ctx)
+	cookies, err := m.cookiesForURL(ctx, scope, url)
+	if err != nil {
+		return nil, fmt.Errorf("load browser cookies: %w", err)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	tenantID := tenantIDFromCtx(ctx)
+	tenantID := scope.Key()
 
 	// Enforce max pages per tenant
 	if m.maxPages > 0 {
@@ -85,14 +91,35 @@ func (m *Manager) OpenTab(ctx context.Context, url string) (*TabInfo, error) {
 		return nil, err
 	}
 
-	page, err := b.Page(proto.TargetCreateTarget{URL: url})
+	initialURL := url
+	if len(cookies) > 0 {
+		initialURL = "about:blank"
+	}
+	page, err := b.Page(proto.TargetCreateTarget{URL: initialURL})
 	if err != nil {
 		return nil, fmt.Errorf("open tab: %w", err)
 	}
+	if len(cookies) > 0 {
+		if err := page.SetCookies(cookies); err != nil {
+			_ = page.Close()
+			return nil, fmt.Errorf("set browser cookies: %w", err)
+		}
+		if err := page.Navigate(url); err != nil {
+			_ = page.Close()
+			return nil, fmt.Errorf("navigate after setting cookies: %w", err)
+		}
+	}
 
+	// Watchdog: close page on ctx cancel to unblock WaitStable CDP call.
+	stopWatchdog := watchPageClose(ctx, page)
 	if err := page.WaitStable(300 * time.Millisecond); err != nil {
+		stopWatchdog()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("wait stable: %w", err)
 	}
+	stopWatchdog()
 	info, _ := page.Info()
 	tid := string(page.TargetID)
 	m.pages[tid] = page

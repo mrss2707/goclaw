@@ -7,7 +7,11 @@ export interface ToolPolicyConfig {
   allow?: string[];
   deny?: string[];
   alsoAllow?: string[];
-  byProvider?: Record<string, { profile?: string; allow?: string[]; deny?: string[]; alsoAllow?: string[] }>;
+  byProvider?: Record<string, ToolPolicyConfig>;
+  wait?: {
+    min_ms?: number;
+    max_ms?: number;
+  };
   toolCallPrefix?: string; // prefix to strip from model's tool call names
 }
 
@@ -16,6 +20,7 @@ export interface SubagentsConfig {
   maxSpawnDepth?: number;
   maxChildrenPerAgent?: number;
   archiveAfterMinutes?: number;
+  maxRetries?: number;
   model?: string;
 }
 
@@ -31,6 +36,7 @@ export interface CompactionConfig {
 
 export interface ContextPruningConfig {
   mode?: "off" | "cache-ttl";
+  ttl?: string;             // cache TTL gate duration, e.g. "5m" (default). Only used when mode="cache-ttl"
   keepLastAssistants?: number;
   softTrimRatio?: number;
   hardClearRatio?: number;
@@ -44,6 +50,24 @@ export interface ContextPruningConfig {
     enabled?: boolean;
     placeholder?: string;
   };
+}
+
+export interface DeliveryGeneratorConfig {
+  enabled?: boolean;
+  mode?: "sidecar_generated" | "llm_generated" | "fixed_template" | "off";
+  provider?: string;
+  model?: string;
+  timeout_ms?: number;
+  max_tokens?: number;
+  max_chars?: number;
+  min_delay_ms?: number;
+  templates?: string[];
+}
+
+export interface DeliveryBehaviorConfig {
+  enabled?: boolean;
+  intermediate_replies?: DeliveryGeneratorConfig;
+  quick_ack?: DeliveryGeneratorConfig;
 }
 
 export interface SandboxConfig {
@@ -93,18 +117,16 @@ export interface WorkspaceSharingConfig {
 }
 
 export type ChatGPTOAuthRoutingStrategy =
-  | "manual"
-  | "primary_first"
   | "round_robin"
   | "priority_order";
 
 export type EffectiveChatGPTOAuthRoutingStrategy =
-  | "primary_first"
   | "round_robin"
   | "priority_order";
 
 export type ChatGPTOAuthRoutingOverrideMode = "inherit" | "custom";
 export type ReasoningOverrideMode = "inherit" | "custom";
+export type InboundDebounceOverrideMode = "inherit" | "custom";
 
 export interface AgentReasoningConfig {
   override_mode?: ReasoningOverrideMode;
@@ -112,10 +134,28 @@ export interface AgentReasoningConfig {
   fallback?: "downgrade" | "provider_default" | "off";
 }
 
+export interface InboundDebounceConfig {
+  override_mode?: InboundDebounceOverrideMode;
+  inbound_debounce_ms?: number;
+}
+
 export interface ChatGPTOAuthRoutingConfig {
   override_mode?: ChatGPTOAuthRoutingOverrideMode;
   strategy?: ChatGPTOAuthRoutingStrategy;
   extra_provider_names?: string[];
+}
+
+export interface ModelFallbackCandidate {
+  provider?: string;
+  model?: string;
+}
+
+export interface ModelFallbackConfig {
+  enabled?: boolean;
+  strategy?: "priority_order";
+  candidates?: ModelFallbackCandidate[];
+  max_attempts?: number;
+  cooldown_enabled?: boolean;
 }
 
 export interface KgDedupConfig {
@@ -157,6 +197,7 @@ export interface AgentData {
   reasoning_config?: AgentReasoningConfig | null;
   workspace_sharing?: WorkspaceSharingConfig | null;
   chatgpt_oauth_routing?: ChatGPTOAuthRoutingConfig | null;
+  model_fallback?: ModelFallbackConfig | null;
   shell_deny_groups?: ShellDenyGroups | null;
   kg_dedup_config?: KgDedupConfig | null;
 
@@ -171,6 +212,15 @@ export interface AgentData {
   other_config?: Record<string, unknown> | null;
   budget_monthly_cents?: number | null;
   tenant_id?: string;
+  grant_gateway_operator_access?: boolean;
+  gateway_operator_bootstrap?: GatewayOperatorBootstrapResult | null;
+}
+
+export interface GatewayOperatorBootstrapResult {
+  status: "granted" | "warning" | "skipped" | string;
+  binary_id?: string;
+  grant_id?: string;
+  warning?: string;
 }
 
 export interface AgentShareData {

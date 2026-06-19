@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/nextlevelbuilder/goclaw/internal/agent"
+	"github.com/nextlevelbuilder/goclaw/internal/audio"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/channels"
 	"github.com/nextlevelbuilder/goclaw/internal/channels/discord"
@@ -27,7 +28,8 @@ import (
 )
 
 // registerConfigChannels registers config-based channels as fallback when no DB instances are loaded.
-func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, msgBus *bus.MessageBus, pgStores *store.Stores, instanceLoader *channels.InstanceLoader) {
+// audioMgr is optional (nil = STT disabled for channels).
+func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, msgBus *bus.MessageBus, pgStores *store.Stores, instanceLoader *channels.InstanceLoader, audioMgr *audio.Manager) {
 	if instanceLoader != nil {
 		return
 	}
@@ -46,7 +48,7 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 	if cfg.Channels.Telegram.Enabled {
 		if cfg.Channels.Telegram.Token == "" {
 			recordMissingConfig(channels.TypeTelegram, "Set channels.telegram.token in config.")
-		} else if tg, err := telegram.New(cfg.Channels.Telegram, msgBus, pgStores.Pairing); err != nil {
+		} else if tg, err := telegram.New(cfg.Channels.Telegram, msgBus, pgStores.Pairing, audioMgr); err != nil {
 			channelMgr.RecordFailure(channels.TypeTelegram, "", err)
 			slog.Error("failed to initialize telegram channel", "error", err)
 		} else {
@@ -58,7 +60,7 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 	if cfg.Channels.Discord.Enabled {
 		if cfg.Channels.Discord.Token == "" {
 			recordMissingConfig(channels.TypeDiscord, "Set channels.discord.token in config.")
-		} else if dc, err := discord.New(cfg.Channels.Discord, msgBus, nil, nil, nil, nil); err != nil {
+		} else if dc, err := discord.New(cfg.Channels.Discord, msgBus, nil, nil, nil, nil, audioMgr); err != nil {
 			channelMgr.RecordFailure(channels.TypeDiscord, "", err)
 			slog.Error("failed to initialize discord channel", "error", err)
 		} else {
@@ -72,7 +74,7 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 		if strings.Contains(fmt.Sprintf("%T", pgStores.DB.Driver()), "sqlite") {
 			waDialect = "sqlite3"
 		}
-		wa, err := whatsapp.New(cfg.Channels.WhatsApp, msgBus, pgStores.Pairing, pgStores.DB, pgStores.PendingMessages, waDialect)
+		wa, err := whatsapp.New(cfg.Channels.WhatsApp, msgBus, pgStores.Pairing, pgStores.DB, pgStores.PendingMessages, waDialect, audioMgr, pgStores.BuiltinTools)
 		if err != nil {
 			channelMgr.RecordFailure(channels.TypeWhatsApp, "", err)
 			slog.Error("failed to initialize whatsapp channel", "error", err)
@@ -131,7 +133,7 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 				feishu.WithAgentStore(pgStores.Agents),
 				feishu.WithConfigPermStore(pgStores.ConfigPermissions),
 			}
-			if f, err := feishu.New(cfg.Channels.Feishu, msgBus, pgStores.Pairing, nil, feishuOpts...); err != nil {
+			if f, err := feishu.New(cfg.Channels.Feishu, msgBus, pgStores.Pairing, nil, audioMgr, feishuOpts...); err != nil {
 				channelMgr.RecordFailure(channels.TypeFeishu, "", err)
 				slog.Error("failed to initialize feishu channel", "error", err)
 			} else {
@@ -143,16 +145,22 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 }
 
 // wireChannelRPCMethods registers WS RPC methods for channels, instances, agent links, and teams.
-func wireChannelRPCMethods(server *gateway.Server, pgStores *store.Stores, channelMgr *channels.Manager, agentRouter *agent.Router, msgBus *bus.MessageBus, dataDir string) {
+// Returns the channel-instances methods handler so the caller can register
+// per-channel-type orphan cleaners (e.g. Bitrix24 imbot.unregister) after
+// per-channel dependencies (portal store, encryption key) are in scope.
+func wireChannelRPCMethods(server *gateway.Server, pgStores *store.Stores, channelMgr *channels.Manager, instanceLoader *channels.InstanceLoader, agentRouter *agent.Router, msgBus *bus.MessageBus, cfg *config.Config, dataDir string) *methods.ChannelInstancesMethods {
 	// Register channels RPC methods (after channelMgr is initialized with all channels)
 	methods.NewChannelsMethods(channelMgr).Register(server.Router())
+	methods.NewChatBehaviorMethods(cfg, channelMgr).Register(server.Router())
 
 	// Register channel instances WS RPC methods
+	var chInstancesM *methods.ChannelInstancesMethods
 	if pgStores.ChannelInstances != nil {
-		methods.NewChannelInstancesMethods(pgStores.ChannelInstances, pgStores.Agents, msgBus, msgBus).Register(server.Router())
+		chInstancesM = methods.NewChannelInstancesMethods(pgStores.ChannelInstances, pgStores.Agents, msgBus, msgBus, channelMgr)
+		chInstancesM.Register(server.Router())
 		zalomethods.NewQRMethods(pgStores.ChannelInstances, msgBus).Register(server.Router())
 		zalomethods.NewContactsMethods(pgStores.ChannelInstances).Register(server.Router())
-		whatsapp.NewQRMethods(pgStores.ChannelInstances, channelMgr).Register(server.Router())
+		whatsapp.NewQRMethods(pgStores.ChannelInstances, channelMgr, instanceLoader).Register(server.Router())
 	}
 
 	// Register agent links WS RPC methods
@@ -164,6 +172,8 @@ func wireChannelRPCMethods(server *gateway.Server, pgStores *store.Stores, chann
 	if pgStores.Teams != nil {
 		methods.NewTeamsMethods(pgStores.Teams, pgStores.Agents, pgStores.AgentLinks, agentRouter, msgBus, msgBus, dataDir).Register(server.Router())
 	}
+
+	return chInstancesM
 }
 
 // wireChannelEventSubscribers sets up event subscribers for channel instance cache invalidation,
@@ -185,6 +195,19 @@ func wireChannelEventSubscribers(
 			}
 			payload, ok := event.Payload.(bus.CacheInvalidatePayload)
 			if !ok || payload.Kind != bus.CacheKindChannelInstances {
+				return
+			}
+			if payload.Key != "" {
+				id, err := uuid.Parse(payload.Key)
+				if err != nil {
+					slog.Warn("channel instance targeted reload skipped: invalid id", "id", payload.Key, "error", err)
+					return
+				}
+				go func() {
+					if err := instanceLoader.LoadInstanceByID(store.WithCrossTenant(context.Background()), id); err != nil {
+						slog.Warn("channel instance targeted reload failed", "id", payload.Key, "error", err)
+					}
+				}()
 				return
 			}
 			go instanceLoader.Reload(context.Background())
@@ -268,4 +291,3 @@ func wireChannelEventSubscribers(
 		})
 	}
 }
-

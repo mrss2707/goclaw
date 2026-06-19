@@ -1,10 +1,14 @@
 package http
 
+import "github.com/nextlevelbuilder/goclaw/internal/providers"
+
 // bailianModels returns a hardcoded list of models available on the
 // Bailian Coding platform (coding-intl.dashscope.aliyuncs.com).
 // The platform does not expose a /v1/models endpoint.
 func bailianModels() []ModelInfo {
 	return []ModelInfo{
+		// qwen3.7-plus: Text Generation + Deep Thinking + Visual Understanding.
+		{ID: "qwen3.7-plus", Name: "Qwen 3.7 Plus"},
 		{ID: "qwen3.6-plus", Name: "Qwen 3.6 Plus"},
 		{ID: "qwen3.5-plus", Name: "Qwen 3.5 Plus"},
 		{ID: "kimi-k2.5", Name: "Kimi K2.5"},
@@ -63,15 +67,6 @@ func dashScopeModels() []ModelInfo {
 	}
 }
 
-// sunoModels returns a hardcoded list of Suno music generation models.
-func sunoModels() []ModelInfo {
-	return []ModelInfo{
-		{ID: "v4.5", Name: "Suno V4.5"},
-		{ID: "v4", Name: "Suno V4"},
-		{ID: "v3.5", Name: "Suno V3.5"},
-	}
-}
-
 // claudeCLIModels returns the model aliases accepted by the Claude CLI.
 func claudeCLIModels() []ModelInfo {
 	return []ModelInfo{
@@ -93,6 +88,7 @@ func acpModels() []ModelInfo {
 // chatGPTOAuthModels returns models available via ChatGPT OAuth integration.
 func chatGPTOAuthModels() []ModelInfo {
 	return withReasoningCapabilities([]ModelInfo{
+		{ID: providers.DefaultCodexModel, Name: "GPT-5.5"},
 		{ID: "gpt-5.4", Name: "GPT-5.4"},
 		{ID: "gpt-5.4-mini", Name: "GPT-5.4 Mini"},
 		{ID: "gpt-5.3-codex", Name: "GPT-5.3 Codex"},

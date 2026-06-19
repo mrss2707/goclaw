@@ -85,8 +85,8 @@ func TestAnthropicAdapterToRequest_CacheControl(t *testing.T) {
 			{Role: "user", Content: "Hello"},
 		},
 		Tools: []ToolDefinition{
-			{Type: "function", Function: ToolFunctionSchema{Name: "tool1", Description: "desc1", Parameters: map[string]any{"type": "object"}}},
-			{Type: "function", Function: ToolFunctionSchema{Name: "tool2", Description: "desc2", Parameters: map[string]any{"type": "object"}}},
+			{Type: "function", Function: &ToolFunctionSchema{Name: "tool1", Description: "desc1", Parameters: map[string]any{"type": "object"}}},
+			{Type: "function", Function: &ToolFunctionSchema{Name: "tool2", Description: "desc2", Parameters: map[string]any{"type": "object"}}},
 		},
 	}
 	data, _, err := adapter.ToRequest(req)
@@ -147,6 +147,48 @@ func TestAnthropicAdapterToRequest_Thinking(t *testing.T) {
 	// Temperature should be removed when thinking is enabled
 	if _, hasTemp := body["temperature"]; hasTemp {
 		t.Error("temperature should be removed when thinking is enabled")
+	}
+}
+
+func TestAnthropicAdapterToRequest_SkipsTemperatureForClaude46(t *testing.T) {
+	adapter, _ := NewAnthropicAdapter(ProviderConfig{APIKey: "sk-test"})
+
+	for _, model := range []string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-7-20260501"} {
+		t.Run(model, func(t *testing.T) {
+			req := ChatRequest{
+				Model:    model,
+				Messages: []Message{{Role: "user", Content: "hi"}},
+				Options:  map[string]any{OptTemperature: 0.7},
+			}
+			data, _, err := adapter.ToRequest(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(data, &body); err != nil {
+				t.Fatal(err)
+			}
+			if _, hasTemp := body["temperature"]; hasTemp {
+				t.Errorf("model %q: temperature should be omitted", model)
+			}
+		})
+	}
+
+	req := ChatRequest{
+		Model:    "claude-sonnet-4-5-20250929",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Options:  map[string]any{OptTemperature: 0.7},
+	}
+	data, _, err := adapter.ToRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["temperature"] != 0.7 {
+		t.Errorf("sonnet 4.5 should keep temperature, got %v", body["temperature"])
 	}
 }
 

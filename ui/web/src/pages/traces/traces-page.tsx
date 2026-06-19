@@ -3,13 +3,6 @@ import { useTranslation } from "react-i18next";
 import { Activity, GitFork, RefreshCw, Square, Bot, User, Users, Clock, Network, Globe, CheckCircle2, XCircle, Loader2, CircleDot, CircleDashed } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Pagination } from "@/components/shared/pagination";
@@ -24,9 +17,14 @@ import { useDeferredLoading } from "@/hooks/use-deferred-loading";
 import { useUiStore } from "@/stores/use-ui-store";
 import { useAgents } from "@/pages/agents/hooks/use-agents";
 import { useChannelInstances } from "@/pages/channels/hooks/use-channel-instances";
+import { useQueryClient } from "@tanstack/react-query";
 import { useWs } from "@/hooks/use-ws";
-import { Methods } from "@/api/protocol";
+import { useWsEvent } from "@/hooks/use-ws-event";
+import { Methods, Events } from "@/api/protocol";
+import { queryKeys } from "@/lib/query-keys";
 import { toast } from "@/stores/use-toast-store";
+import { TraceFilterBar } from "./trace-filter-bar";
+import type { TraceFilters } from "./trace-filter-params";
 
 /** Strip media placeholder tags like <media:image> from preview text */
 function cleanPreview(text: string): string {
@@ -59,13 +57,23 @@ export function TracesPage() {
   const { t } = useTranslation("traces");
   const { t: tc } = useTranslation("common");
   const tz = useUiStore((s) => s.timezone);
-  const [agentFilter, setAgentFilter] = useState<string>();
-  const [channelFilter, setChannelFilter] = useState<string>();
+  const globalPageSize = useUiStore((s) => s.pageSize);
+  const setGlobalPageSize = useUiStore((s) => s.setPageSize);
+  const [filters, setFilters] = useState<TraceFilters>({});
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSizeRaw] = useState(globalPageSize);
+  const setPageSize = (size: number) => { setPageSizeRaw(size); setPage(1); setGlobalPageSize(size); };
 
   const ws = useWs();
+  const queryClient = useQueryClient();
+
+  // Invalidate traces list on immediate status events (no need to wait for 5s flush).
+  useWsEvent(Events.TRACE_STATUS, useCallback(
+    () => queryClient.invalidateQueries({ queryKey: queryKeys.traces.all }),
+    [queryClient],
+  ));
+
   const { agents } = useAgents();
   const { instances: channels } = useChannelInstances();
 
@@ -78,8 +86,7 @@ export function TracesPage() {
   const [abortingRunId, setAbortingRunId] = useState<string | null>(null);
 
   const { traces, total, loading, fetching, refresh, getTrace } = useTraces({
-    agentId: agentFilter,
-    channel: channelFilter,
+    ...filters,
     limit: pageSize,
     offset: (page - 1) * pageSize,
   });
@@ -101,16 +108,33 @@ export function TracesPage() {
         const res = await ws.call(Methods.CHAT_ABORT, {
           sessionKey: trace.session_key,
           runId: trace.run_id,
-        }) as { aborted?: boolean };
-        if (res?.aborted) {
-          toast.success(t("toast.abortSent"));
-          refresh();
-        } else {
+        }) as {
+          aborted?: boolean;
+          stopped?: boolean;
+          forced?: boolean;
+          alreadyAborting?: boolean;
+          notFound?: boolean;
+          unauthorized?: boolean;
+        };
+        if (res?.stopped) {
+          toast.success(t("toast.abortStopped"));
+        } else if (res?.forced) {
+          toast.warning(t("toast.abortForced"));
+        } else if (res?.alreadyAborting) {
+          toast.info(t("toast.abortAlreadyAborting"));
+        } else if (res?.unauthorized) {
+          toast.error(t("toast.abortUnauthorized"));
+        } else if (res?.notFound) {
           toast.info(t("toast.abortNotFound"));
+        } else {
+          toast.error(t("toast.abortFailed"));
         }
+        refresh();
       } catch {
         toast.error(t("toast.abortFailed"));
       } finally {
+        // Auto re-enable within 5s max (3s grace + 2s buffer) in case WS event is delayed.
+        setTimeout(() => setAbortingRunId(null), 5000);
         setAbortingRunId(null);
       }
     },
@@ -129,39 +153,12 @@ export function TracesPage() {
         }
       />
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        {/* Agent filter */}
-        <Select
-          value={agentFilter ?? "__all__"}
-          onValueChange={(v) => { setAgentFilter(v === "__all__" ? undefined : v); setPage(1); }}
-        >
-          <SelectTrigger className="h-8 w-44 text-xs">
-            <SelectValue placeholder={t("allAgents")} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all__">{t("allAgents")}</SelectItem>
-            {agents.map((a) => (
-              <SelectItem key={a.id} value={a.id}>{a.display_name || a.agent_key || a.id}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        {/* Channel filter */}
-        <Select
-          value={channelFilter ?? "__all__"}
-          onValueChange={(v) => { setChannelFilter(v === "__all__" ? undefined : v); setPage(1); }}
-        >
-          <SelectTrigger className="h-8 w-44 text-xs">
-            <SelectValue placeholder={t("allChannels")} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all__">{t("allChannels")}</SelectItem>
-            {channels.map((ch) => (
-              <SelectItem key={ch.id} value={ch.name}>{ch.display_name || ch.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <TraceFilterBar
+        filters={filters}
+        agents={agents}
+        channels={channels}
+        onChange={(next) => { setFilters(next); setPage(1); }}
+      />
 
       <div className="mt-4">
         {showSkeleton ? (

@@ -133,14 +133,7 @@ No skill is created without explicit user approval ("save as skill" or "skip").
 
 Both stored in `agents.other_config` JSONB. Parsed by `ParseSkillEvolve()` and `ParseSkillNudgeInterval()` in `agent_store.go`.
 
-**Predefined agents only.** Enforced at resolver level:
-
-```go
-// resolver.go:346
-SkillEvolve: ag.AgentType == "predefined" && ag.ParseSkillEvolve(),
-```
-
-Open agents always get `skillEvolve=false` regardless of DB setting.
+**Predefined agents only.** Enforced at the resolver level: `SkillEvolve` is set to `true` only when `AgentType == "predefined"` and the `skill_evolve` config flag is enabled. Open agents always get `skillEvolve=false` regardless of DB setting.
 
 **UI:** Config tab → Skill Learning section (toggle + interval input).
 
@@ -193,12 +186,13 @@ SHOULD NOT create skill when:
 - Simple tasks (< 5 tool calls)
 - User explicitly said "skip" or declined
 
-Creating: skill_manage(action="create", content="---\nname: ...\n...")
-Improving: skill_manage(action="patch", slug="...", find="...", replace="...")
+Creating: skill_manage(action="create", content="---\nname: ...\n...", files={"references/guide.md":"..."})
+Improving: skill_manage(action="patch", slug="...", find="...", replace="...", files={"references/guide.md":"..."})
 Removing: skill_manage(action="delete", slug="...")
 
 Constraints:
 - You can only manage skills you created (not system or other users' skills)
+- Use files for small text companion files. Use publish_skill or ZIP upload for full directories and binary assets.
 - Quality over quantity — one excellent skill beats five mediocre ones
 - Ask user before creating if unsure
 ```
@@ -254,8 +248,8 @@ reusable skill? Reply "save as skill" or "skip"._
 
 When `skill_evolve=false`, `skill_manage` is completely hidden from the LLM:
 
-1. **API params** (`loop.go:528-537`): filtered from `toolDefs` before sending to provider
-2. **System prompt tooling** (`loop_history.go:135-144`): filtered from `toolNames` used in prompt construction
+1. **API params**: filtered from `toolDefs` before sending to provider
+2. **System prompt tooling**: filtered from `toolNames` used in prompt construction
 
 The tool remains in the shared registry (admin can see it) but the agent has zero awareness of it.
 
@@ -269,7 +263,7 @@ Two paths for creating skills programmatically:
 
 | Path | Interface | Use Case |
 |------|-----------|----------|
-| `skill_manage` | Content string (SKILL.md body) | Agent creates during conversation (learning loop) |
+| `skill_manage` | Content string plus optional text companion files | Agent creates during conversation (learning loop) |
 | `publish_skill` | Directory path | Agent creates via filesystem (see [doc 16](./16-skill-publishing.md)) |
 
 Admin management via HTTP API + WebSocket RPC. Grants system controls per-agent and per-user access.
@@ -285,6 +279,8 @@ Admin management via HTTP API + WebSocket RPC. Grants system controls per-agent 
 | `content` | string | create | Full SKILL.md including YAML frontmatter |
 | `find` | string | patch | Exact text to find in current SKILL.md |
 | `replace` | string | patch | Replacement text |
+| `files` | object | no | Optional text companion files keyed by relative path, e.g. `references/guide.md` |
+| `visibility` | string | patch | Optional metadata-only visibility change when no content/files change |
 
 **Operations flow:**
 
@@ -292,24 +288,24 @@ Admin management via HTTP API + WebSocket RPC. Grants system controls per-agent 
 flowchart LR
     subgraph CREATE["action = create"]
         direction TB
-        C1["Content string"] --> C2["Size ≤ 100KB?"]
-        C2 --> C3["Security scan"]
+        C1["Content +<br/>optional files"] --> C2["Size and path<br/>validation"]
+        C2 --> C3["Security scan<br/>SKILL.md"]
         C3 --> C4["Parse frontmatter"]
         C4 --> C5["Slug validation"]
         C5 --> C6["System skill<br/>conflict check"]
-        C6 --> C7["Write SKILL.md<br/>to versioned dir"]
+        C6 --> C7["Write SKILL.md +<br/>companions"]
         C7 --> C8["DB insert<br/>(advisory lock)"]
         C8 --> C9["Auto-grant +<br/>dep scan"]
     end
 
     subgraph PATCH["action = patch"]
         direction TB
-        P1["slug + find/replace"] --> P2["Exists?<br/>System skill?"]
+        P1["slug + find/replace<br/>and/or files"] --> P2["Exists?<br/>System skill?"]
         P2 --> P3["Ownership check"]
-        P3 --> P4["Read current +<br/>apply patch"]
-        P4 --> P5["Security scan<br/>patched content"]
+        P3 --> P4["Read current +<br/>overlay files"]
+        P4 --> P5["Security scan +<br/>path validation"]
         P5 --> P6["New version<br/>(advisory lock)"]
-        P6 --> P7["Copy companions +<br/>DB update"]
+        P6 --> P7["Write companions +<br/>DB update"]
     end
 
     subgraph DELETE["action = delete"]
@@ -331,8 +327,8 @@ Directory-based alternative. See [16 - Skill Publishing System](./16-skill-publi
 
 | Dimension | `skill_manage` | `publish_skill` |
 |-----------|---------------|-----------------|
-| Input | Content string | Directory path |
-| Files | SKILL.md only (patch copies companions) | Entire directory (scripts, assets, etc.) |
+| Input | SKILL.md content plus optional files map | Directory path |
+| Files | SKILL.md plus direct text companion files; patch copies existing companions forward | Entire directory (scripts, assets, etc.) |
 | Dependency scan | Yes (warn only) | Yes (warn only) |
 | Auto-grant | Yes | Yes |
 | Skill creation guidance | Yes (skill_evolve prompt) | No (uses skill-creator core skill) |
@@ -349,16 +345,79 @@ All endpoints require authentication (`authMiddleware`). Mutation endpoints requ
 | `PUT` | `/v1/skills/{id}` | Update metadata (owner/admin) |
 | `DELETE` | `/v1/skills/{id}` | Delete/archive skill (owner/admin) |
 | `POST` | `/v1/skills/{id}/toggle` | Enable/disable skill (owner/admin) |
+| `GET` | `/v1/skills/{id}/dependencies` | Structured dependency status by source |
+| `POST` | `/v1/skills/{id}/dependencies/scan` | Re-scan skill dependencies |
+| `POST` | `/v1/skills/{id}/dependencies/check` | Check missing skill dependencies |
+| `POST` | `/v1/skills/{id}/dependencies/install` | Install missing deps for one skill (master tenant) |
+| `GET` | `/v1/skills/{id}/access` | Read visibility and grants |
+| `PATCH` | `/v1/skills/{id}/access` | Set visibility/access mode |
+| `GET` | `/v1/skills/{id}/access/effective` | Explain access for one skill/agent/user |
+| `GET` | `/v1/skills/access/effective` | Explain effective access across skills |
 | `POST` | `/v1/skills/{id}/grants/agent` | Grant skill to agent (owner/admin) |
-| `DELETE` | `/v1/skills/{id}/grants/agent` | Revoke agent grant (owner/admin) |
+| `DELETE` | `/v1/skills/{id}/grants/agent/{agentID}` | Revoke agent grant (owner/admin) |
 | `POST` | `/v1/skills/{id}/grants/user` | Grant skill to user (owner/admin) |
-| `DELETE` | `/v1/skills/{id}/grants/user` | Revoke user grant (owner/admin) |
+| `DELETE` | `/v1/skills/{id}/grants/user/{userID}` | Revoke user grant (owner/admin) |
 | `POST` | `/v1/skills/upload` | Upload custom skill ZIP |
 | `POST` | `/v1/skills/rescan-deps` | Re-scan all enabled skills |
 | `POST` | `/v1/skills/install-deps` | Install all missing deps |
 | `GET` | `/v1/skills/runtimes` | Check python3/node availability |
 
-### 3.5 WebSocket RPC
+### 3.5 Skill Self-Evolution
+
+Skill self-evolution tracks how each existing skill performs over time. It is
+separate from agent-level `skill_evolve`, which teaches agents when to create or
+patch reusable skills.
+
+**Runtime recording**
+
+- `use_skill` tool calls record tenant-scoped usage with status `succeeded` or
+  `failed`, duration, session key, run/trace ID, agent ID, and user scope.
+- Slash-command activation records a `started` event when `/<slug>` or
+  `/use <skill>` resolves to a skill.
+- Usage writes are internal only. v1 intentionally has no public
+  `POST /v1/skills/{id}/usage` endpoint, so clients cannot forge success rates.
+
+**Persistent tables**
+
+| Table | Purpose |
+|-------|---------|
+| `skill_evolution_settings` | Per-tenant, per-skill enabled flag and mode |
+| `skill_usage_metrics` | Runtime usage events and status counts |
+| `skill_improvement_suggestions` | Skill-scoped suggestions with evidence and draft patches |
+| `skill_versions` | Immutable applied-version records linked to changed files and suggestions |
+
+**HTTP and CLI controls**
+
+- HTTP: `GET/PATCH /v1/skills/{id}/evolution`,
+  `GET /v1/skills/{id}/metrics`,
+  `GET /v1/skills/{id}/activity`, and suggestion approve/reject/apply endpoints.
+- CLI: `goclaw skills evolve`, `goclaw skills metrics`,
+  `goclaw skills suggestions`, and `goclaw skills activity`.
+- Web UI: Skill detail has an `evolution` tab for settings, metrics,
+  suggestions, and admin-visible activity.
+
+**Guardrails**
+
+- Default mode is `suggest_only`; no automatic patching happens in v1.
+- Applying a suggestion to a custom skill copies the current skill directory to
+  the next version, validates the target path, runs the SKILL.md guard scanner
+  when needed, updates the active skill, records `skill_versions`, and writes an
+  activity log entry.
+- System/bundled skill mutation is refused by the apply path.
+- Viewer surfaces are sanitized. Failure evidence, draft patches, actor IDs,
+  and activity details require admin visibility.
+
+**Relationship to self-improving skills**
+
+This v1 is the control-plane foundation for self-improving skills: runtime usage
+events, evidence-backed suggestions, reference-file patches, version records,
+and approval/audit surfaces. It does not yet run a consolidation extractor that
+turns repeated corrections into learning notes or auto-applies user-scoped
+reference overlays. That higher-level learning loop belongs above this
+foundation and must keep scope separation, private-content filtering, evidence
+thresholds, and owner/admin approval policies explicit.
+
+### 3.6 WebSocket RPC
 
 | Method | Description |
 |--------|-------------|
@@ -366,7 +425,7 @@ All endpoints require authentication (`authMiddleware`). Mutation endpoints requ
 | `skills.get` | Get skill content by name |
 | `skills.update` | Update metadata (ownership-protected) |
 
-### 3.6 Grants & Visibility
+### 3.7 Grants & Visibility
 
 ```mermaid
 stateDiagram-v2
@@ -455,9 +514,9 @@ System skills (`is_system=true`) cannot be modified through any path.
 | Protection | Implementation |
 |------------|----------------|
 | Symlink detection | `filepath.WalkDir` + `d.Type()&os.ModeSymlink` check |
-| Path traversal | `strings.Contains(rel, "..")` rejection |
+| Path traversal | Direct `skill_manage(files=...)` payload rejects absolute paths, Windows drive paths, null bytes, `..`, `SKILL.md`, dotfiles/dotdirs, and system artifacts |
 | Content size limit | 100KB max for SKILL.md content |
-| Companion size limit | 20MB max total for companion files (scripts, assets) |
+| Companion size limit | Direct `skill_manage(files=...)` text files are capped at 2MB each. Existing companions copy forward with the 20MB total copy limit. ZIP upload remains configurable, default 20MB and clamped to 1-500MB |
 | Soft-delete | Files moved to `.trash/`, never hard-deleted |
 
 ---
@@ -504,35 +563,14 @@ When both features are disabled (default), zero token overhead.
 
 ## 7. File Reference
 
-| File | Purpose |
-|------|---------|
-| `internal/agent/systemprompt.go` | `buildSelfEvolveSection()`, `buildSkillsSection()` |
-| `internal/agent/loop.go` | Budget nudges (70%/90%), postscript, tool gating |
-| `internal/agent/loop_history.go` | `HasSkillManage` flag, tool name filtering |
-| `internal/agent/resolver.go` | Predefined-only enforcement for both features |
-| `internal/store/agent_store.go` | `ParseSelfEvolve()`, `ParseSkillEvolve()`, `ParseSkillNudgeInterval()` |
-| `internal/tools/skill_manage.go` | `skill_manage` tool (create/patch/delete) |
-| `internal/tools/publish_skill.go` | `publish_skill` tool (directory-based) |
-| `internal/tools/context_file_interceptor.go` | SOUL.md write validation for self-evolve |
-| `internal/skills/guard.go` | Content security scanner (25 regex rules) |
-| `internal/store/pg/skills_crud.go` | `CreateSkillManaged`, `GetNextVersionLocked`, advisory lock |
-| `internal/store/pg/skills_content.go` | `GetSkillOwnerID`, `GetSkillOwnerIDBySlug` |
-| `internal/store/pg/skills_grants.go` | Grant/revoke operations, visibility auto-promotion |
-| `internal/http/skills.go` | HTTP skill management endpoints |
-| `internal/http/skills_grants.go` | HTTP grant/revoke endpoints |
-| `internal/gateway/methods/skills.go` | WebSocket skill methods |
-| `internal/i18n/keys.go` | `MsgSkillNudgePostscript`, `MsgSkillNudge70Pct`, `MsgSkillNudge90Pct` |
-| `internal/i18n/catalog_en.go` | English nudge translations |
-| `internal/i18n/catalog_vi.go` | Vietnamese nudge translations |
-| `internal/i18n/catalog_zh.go` | Chinese nudge translations |
-| `cmd/gateway_builtin_tools.go` | `skill_manage` builtin tool seed entry |
-| `internal/agent/suggestion_engine.go` | SuggestionEngine + pluggable rules interface |
-| `internal/agent/suggestion_rules.go` | Concrete rules: LowRetrievalUsageRule, ToolFailureRule, RepeatedToolRule |
-| `internal/agent/evolution_guardrails.go` | Guardrail validation, apply/rollback logic |
-| `internal/store/evolution_store.go` | Store interfaces: EvolutionMetricsStore, EvolutionSuggestionStore |
-| `internal/store/pg/evolution_metrics.go` | PostgreSQL evolution metrics CRUD + aggregation |
-| `internal/store/pg/evolution_suggestions.go` | PostgreSQL evolution suggestions CRUD + status updates |
-| `cmd/gateway_evolution_cron.go` | Daily cron job scheduler for suggestion generation |
+| Module | Path | Purpose |
+|---|---|---|
+| Agent loop & system prompt | `internal/agent/systemprompt.go`, `internal/agent/loop.go`, `internal/agent/loop_history.go`, `internal/agent/resolver.go` | Self-evolve/skill sections, budget nudges, tool gating, predefined-only enforcement |
+| Skill tools & security | `internal/tools/skill_manage.go`, `internal/tools/publish_skill.go`, `internal/tools/context_file_interceptor.go`, `internal/skills/guard.go` | skill_manage/publish_skill tools, SOUL.md validation, content security scanner |
+| Skill store, HTTP & gateway | `internal/store/pg/skills_*.go`, `internal/http/skills*.go`, `internal/gateway/methods/skills.go`, `internal/store/agent_store.go` | Skill CRUD, grants, versioning, HTTP + WS methods, ParseSkillEvolve helpers |
+| Evolution metrics & i18n | `internal/agent/suggestion_engine.go`, `internal/agent/evolution_guardrails.go`, `internal/store/pg/evolution_*.go`, `internal/i18n/`, `cmd/gateway_evolution_cron.go` | SuggestionEngine, guardrails, metrics/suggestions persistence, nudge translations, cron |
+
+Use `grep` or your editor's symbol search for specific files.
 
 ---
 
@@ -637,7 +675,7 @@ Evolution analysis runs as a periodic cron job (default: daily).
 
 ### 8.5 API & WebSocket
 
-**HTTP Endpoints** (see [22 — V3 HTTP Endpoints](22-v3-http-endpoints.md)):
+**HTTP Endpoints** (see [18 — HTTP REST API](18-http-api.md#14-evolution-metrics--suggestions)):
 - `GET /v1/agents/{agentID}/evolution/metrics` — Query/aggregate metrics
 - `GET /v1/agents/{agentID}/evolution/suggestions` — List suggestions
 - `PATCH /v1/agents/{agentID}/evolution/suggestions/{suggestionID}` — Approve/reject/rollback
@@ -674,4 +712,4 @@ Defaults used if keys absent. Set `evolution_enabled: false` to disable metrics 
 - [15 - Core Skills System](./15-core-skills-system.md) — Bundled system skills, startup seeding, dependency checking
 - [16 - Skill Publishing System](./16-skill-publishing.md) — `publish_skill` tool and `skill-creator` core skill
 - [19 - WebSocket RPC Methods](./19-websocket-rpc.md) — V3 WebSocket methods for evolution, episodic, vault
-- [22 - V3 HTTP Endpoints](./22-v3-http-endpoints.md) — HTTP REST endpoints for evolution metrics, suggestions, episodic memory, vault documents
+- [18 - HTTP REST API](./18-http-api.md) — HTTP REST endpoints for evolution metrics, suggestions, episodic memory, vault documents

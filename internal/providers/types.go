@@ -10,6 +10,7 @@ import (
 const (
 	OptMaxTokens       = "max_tokens"
 	OptTemperature     = "temperature"
+	OptToolChoice      = "tool_choice"
 	OptThinkingLevel   = "thinking_level"
 	OptReasoningEffort = "reasoning_effort"
 	OptEnableThinking  = "enable_thinking"
@@ -98,29 +99,45 @@ type ChatResponse struct {
 	// ThinkingSignature is the accumulated signature from streaming thinking blocks.
 	// Required by Anthropic API for tool use passback when thinking is enabled.
 	ThinkingSignature string `json:"-"`
+
+	// Images holds generated images returned by image_generation_call tools (Codex).
+	// Not persisted to DB; populated at runtime from provider response.
+	Images []ImageContent `json:"-"`
 }
 
 // StreamChunk is a piece of a streaming response.
 type StreamChunk struct {
-	Content  string `json:"content,omitempty"`
-	Thinking string `json:"thinking,omitempty"`
-	Done     bool   `json:"done,omitempty"`
+	Content  string         `json:"content,omitempty"`
+	Thinking string         `json:"thinking,omitempty"`
+	Done     bool           `json:"done,omitempty"`
+	Images   []ImageContent `json:"images,omitempty"` // image generation frames (Codex)
 }
 
-// ImageContent represents a base64-encoded image for vision-capable models.
+// ImageContent represents an image (either base64-encoded or a direct URL) for vision-capable models.
 type ImageContent struct {
-	MimeType string `json:"mime_type"` // e.g. "image/jpeg"
-	Data     string `json:"data"`      // base64-encoded image bytes
+	MimeType string `json:"mime_type"`         // e.g. "image/jpeg"
+	Data     string `json:"data"`              // base64-encoded image bytes
+	URL      string `json:"url,omitempty"`     // URL of the image
+	Partial  bool   `json:"partial,omitempty"` // true for intermediate frames (Codex image_generation_call)
+}
+
+// VideoContent represents a video (either base64-encoded or a direct URL) for video-capable models.
+type VideoContent struct {
+	MimeType string `json:"mime_type"`         // e.g. "video/mp4"
+	Data     string `json:"data"`              // base64-encoded video bytes
+	URL      string `json:"url,omitempty"`     // URL of the video
+	Partial  bool   `json:"partial,omitempty"` // true for intermediate frames
 }
 
 // MediaRef is a lightweight reference to a persistently stored media file.
 // Stored in session JSONB (~60 bytes each) instead of megabytes for base64.
 // On reload, MediaRefs are resolved to file paths and loaded into Images (for images).
 type MediaRef struct {
-	ID       string `json:"id"`             // unique media ID (uuid)
-	MimeType string `json:"mime_type"`      // e.g. "image/jpeg", "application/pdf"
-	Kind     string `json:"kind"`           // "image", "video", "audio", "document"
-	Path     string `json:"path,omitempty"` // absolute workspace path (persisted for /v1/files/ serving)
+	ID       string `json:"id"`               // unique media ID (uuid)
+	MimeType string `json:"mime_type"`        // e.g. "image/jpeg", "application/pdf"
+	Kind     string `json:"kind"`             // "image", "video", "audio", "document"
+	Path     string `json:"path,omitempty"`   // absolute workspace path (persisted for /v1/files/ serving)
+	Prompt   string `json:"prompt,omitempty"` // prompt that generated this asset, if known
 }
 
 // Message represents a conversation message.
@@ -129,6 +146,7 @@ type Message struct {
 	Content    string         `json:"content"`
 	Thinking   string         `json:"thinking,omitempty"`   // reasoning_content for thinking models (Kimi, DeepSeek, etc.)
 	Images     []ImageContent `json:"-"`                    // vision: base64 images (runtime only, never persisted to DB)
+	Videos     []VideoContent `json:"-"`                    // vision: base64 videos (runtime only, never persisted to DB)
 	MediaRefs  []MediaRef     `json:"media_refs,omitempty"` // persistent media file references
 	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"` // for role="tool" responses
@@ -148,6 +166,10 @@ type Message struct {
 	// Pointer type so that older messages (stored before this field existed) deserialize as nil,
 	// allowing the frontend to fall back to synthetic timestamps.
 	CreatedAt *time.Time `json:"created_at,omitempty"`
+
+	// Transient messages are runtime-only context for the next provider call.
+	// They must not be persisted to session history or serialized to providers.
+	Transient bool `json:"-"`
 }
 
 // ToolCall represents a tool invocation requested by the LLM.
@@ -160,9 +182,12 @@ type ToolCall struct {
 }
 
 // ToolDefinition describes a tool available to the LLM.
+// Type is "function" for standard function tools, or a native provider tool type
+// (e.g. "image_generation") for first-class provider-native tools.
+// Function is nil when Type is not "function".
 type ToolDefinition struct {
-	Type     string             `json:"type"` // "function"
-	Function ToolFunctionSchema `json:"function"`
+	Type     string              `json:"type"`               // "function" | "image_generation" | ...
+	Function *ToolFunctionSchema `json:"function,omitempty"` // nil when Type != "function"
 }
 
 // ToolFunctionSchema is the schema for a function tool.
@@ -175,10 +200,14 @@ type ToolFunctionSchema struct {
 
 // Usage tracks token consumption.
 type Usage struct {
-	PromptTokens        int `json:"prompt_tokens"`
-	CompletionTokens    int `json:"completion_tokens"`
-	TotalTokens         int `json:"total_tokens"`
-	CacheCreationTokens int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadTokens     int `json:"cache_read_input_tokens,omitempty"`
-	ThinkingTokens      int `json:"thinking_tokens,omitempty"`
+	PromptTokens                      int  `json:"prompt_tokens"`
+	CompletionTokens                  int  `json:"completion_tokens"`
+	TotalTokens                       int  `json:"total_tokens"`
+	CacheCreationTokens               int  `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadTokens                   int  `json:"cache_read_input_tokens,omitempty"`
+	PromptTokensIncludeCachedSegments bool `json:"prompt_tokens_include_cached_segments,omitempty"`
+	ThinkingTokens                    int  `json:"thinking_tokens,omitempty"`
+	RequestCount                      int  `json:"request_count,omitempty"`
+	ImageCount                        int  `json:"image_count,omitempty"`
+	WebSearchCount                    int  `json:"web_search_count,omitempty"`
 }

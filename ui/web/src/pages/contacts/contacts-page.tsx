@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Contact, Info, Merge, RefreshCw, Search, Unlink } from "lucide-react";
+import { useUiStore } from "@/stores/use-ui-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -21,19 +22,22 @@ import { useContactMerge } from "./hooks/use-contact-merge";
 import { MergeContactsDialog } from "./merge-contacts-dialog";
 import { ContactsTable } from "./contacts-table";
 
-const CHANNEL_TYPES = ["telegram", "discord", "slack", "whatsapp", "zalo_oa", "zalo_personal", "feishu"];
-const PERM_CHANNELS = ["telegram", "discord", "zalo", "slack", "feishu"] as const;
+const CHANNEL_TYPES = ["telegram", "discord", "slack", "whatsapp", "zalo_oa", "zalo_personal", "feishu", "bitrix24"];
+const PERM_CHANNELS = ["telegram", "discord", "zalo", "slack", "feishu", "bitrix24"] as const;
 
 export function ContactsPage() {
   const { t } = useTranslation("contacts");
   const { t: tc } = useTranslation("common");
 
+  const globalPageSize = useUiStore((s) => s.pageSize);
+  const setGlobalPageSize = useUiStore((s) => s.setPageSize);
   const [search, setSearch] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
   const [channelType, setChannelType] = useState("");
   const [contactType, setContactType] = useState("");
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSizeRaw] = useState(globalPageSize);
+  const setPageSize = (size: number) => { setPageSizeRaw(size); setPage(1); setGlobalPageSize(size); };
 
   // Selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());

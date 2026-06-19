@@ -21,6 +21,7 @@ import { ProviderOAuthAccountSection } from "./provider-oauth-account-section";
 import { ProviderReasoningSection } from "./provider-reasoning-section";
 import { ProviderEmbeddingSection } from "./provider-embedding-section";
 import { ProviderPoolActivitySection } from "./provider-pool-activity-section";
+import { ProviderPricingSection } from "./provider-pricing-section";
 import {
   buildProviderSettingsWithChatGPTOAuthRouting,
   buildProviderSettingsWithReasoningDefaults,
@@ -98,7 +99,7 @@ export function ProviderOverview({ provider, onUpdate }: ProviderOverviewProps) 
   const [apiKey, setApiKey] = useState(provider.api_key || "");
   const [enabled, setEnabled] = useState(provider.enabled);
   const [poolRouting, setPoolRouting] = useState<ChatGPTOAuthRoutingConfig>({
-    strategy: initialRouting?.strategy ?? "primary_first",
+    strategy: initialRouting?.strategy ?? "priority_order",
     extra_provider_names: initialRouting?.extraProviderNames ?? [],
   });
   const initEmb = getEmbeddingSettings(provider.settings);
@@ -127,7 +128,7 @@ export function ProviderOverview({ provider, onUpdate }: ProviderOverviewProps) 
   const savedReasoningSig = useMemo(() => reasoningSignature(initialReasoningDefaults?.effort ?? "off", initialReasoningDefaults?.fallback ?? "downgrade"), [initialReasoningDefaults?.effort, initialReasoningDefaults?.fallback]);
   const draftReasoningSig = useMemo(() => reasoningSignature(reasoningExpert ? reasoningEffort : reasoningThinkingLevel, reasoningExpert ? reasoningFallback : "downgrade"), [reasoningEffort, reasoningExpert, reasoningFallback, reasoningThinkingLevel]);
   const savedFormSig = useMemo(
-    () => providerFormSignature({ displayName: provider.display_name || "", apiKey: provider.api_key || "", savedAPIKey: provider.api_key || "", showApiKey, enabled: provider.enabled, embEnabled: initEmb?.enabled ?? false, embModel: initEmb?.model ?? "", embApiBase: initEmb?.api_base ?? "", routing: { strategy: initialRouting?.strategy ?? "primary_first", extra_provider_names: initialRouting?.extraProviderNames ?? [] }, reasoningEffort: initialReasoningDefaults?.effort ?? "off", reasoningFallback: initialReasoningDefaults?.fallback ?? "downgrade", isOAuth }),
+    () => providerFormSignature({ displayName: provider.display_name || "", apiKey: provider.api_key || "", savedAPIKey: provider.api_key || "", showApiKey, enabled: provider.enabled, embEnabled: initEmb?.enabled ?? false, embModel: initEmb?.model ?? "", embApiBase: initEmb?.api_base ?? "", routing: { strategy: initialRouting?.strategy ?? "priority_order", extra_provider_names: initialRouting?.extraProviderNames ?? [] }, reasoningEffort: initialReasoningDefaults?.effort ?? "off", reasoningFallback: initialReasoningDefaults?.fallback ?? "downgrade", isOAuth }),
     [initEmb?.api_base, initEmb?.enabled, initEmb?.model, initialReasoningDefaults?.effort, initialReasoningDefaults?.fallback, initialRouting?.extraProviderNames, initialRouting?.strategy, isOAuth, provider.api_key, provider.display_name, provider.enabled, showApiKey],
   );
   const savedFormSigRef = useRef(savedFormSig);
@@ -144,7 +145,7 @@ export function ProviderOverview({ provider, onUpdate }: ProviderOverviewProps) 
     const reasoning = getProviderReasoningDefaults(provider.settings) ?? providerReasoningDefaults;
     const syncFromProvider = () => {
       setEmbEnabled(es?.enabled ?? false); setEmbModel(es?.model ?? ""); setEmbApiBase(es?.api_base ?? "");
-      setPoolRouting({ strategy: routing?.strategy ?? "primary_first", extra_provider_names: routing?.extraProviderNames ?? [] });
+      setPoolRouting({ strategy: routing?.strategy ?? "priority_order", extra_provider_names: routing?.extraProviderNames ?? [] });
       const nextEffort = reasoning?.effort ?? "off"; const nextFallback = reasoning?.fallback ?? "downgrade";
       setReasoningEffort(nextEffort); setReasoningFallback(nextFallback);
       setReasoningThinkingLevel(deriveLegacyThinkingLevel(nextEffort));
@@ -211,7 +212,7 @@ export function ProviderOverview({ provider, onUpdate }: ProviderOverviewProps) 
     || enabled !== provider.enabled
     || (showApiKey && comparableAPIKeyValue(apiKey, provider.api_key || "", showApiKey) !== "")
     || embEnabled !== (initEmb?.enabled ?? false) || embModel !== (initEmb?.model ?? "") || embApiBase !== (initEmb?.api_base ?? "")
-    || (isOAuth && routingSignature(poolRouting) !== routingSignature({ strategy: initialRouting?.strategy ?? "primary_first", extra_provider_names: initialRouting?.extraProviderNames ?? [] }))
+    || (isOAuth && routingSignature(poolRouting) !== routingSignature({ strategy: initialRouting?.strategy ?? "priority_order", extra_provider_names: initialRouting?.extraProviderNames ?? [] }))
     || draftReasoningSig !== savedReasoningSig;
 
   return (
@@ -284,6 +285,8 @@ export function ProviderOverview({ provider, onUpdate }: ProviderOverviewProps) 
           </div>
         </section>
       ) : null}
+
+      <ProviderPricingSection provider={provider} />
 
       {showEmbedding ? (
         <ProviderEmbeddingSection embEnabled={embEnabled} setEmbEnabled={setEmbEnabled} embModel={embModel} setEmbModel={setEmbModel} embApiBase={embApiBase} setEmbApiBase={setEmbApiBase} onVerify={() => verifyEmbedding(provider.id, embModel.trim() || undefined, undefined)} verifying={embVerifying} verifyResult={embResult} />

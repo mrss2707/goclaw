@@ -15,9 +15,11 @@ const (
 	FailoverFormat        FailoverReason = "format"
 	FailoverRateLimit     FailoverReason = "rate_limit"
 	FailoverOverloaded    FailoverReason = "overloaded"
+	FailoverServerError   FailoverReason = "server_error"
 	FailoverBilling       FailoverReason = "billing"
 	FailoverTimeout       FailoverReason = "timeout"
 	FailoverModelNotFound FailoverReason = "model_not_found"
+	FailoverContentPolicy FailoverReason = "content_policy"
 	FailoverUnknown       FailoverReason = "unknown"
 )
 
@@ -100,6 +102,7 @@ func (c *DefaultClassifier) Classify(err error, statusCode int, body string) Fai
 		if containsAny(lower, "overload", "capacity", "too many") {
 			return classifyReason(FailoverOverloaded)
 		}
+		return classifyReason(FailoverServerError)
 	}
 
 	// Body pattern matching for specific error types
@@ -108,6 +111,9 @@ func (c *DefaultClassifier) Classify(err error, statusCode int, body string) Fai
 	}
 	if containsAny(lower, "tool_call", "function_call", "invalid_request") && statusCode == 400 {
 		return classifyReason(FailoverFormat)
+	}
+	if isContentPolicyRefusal(lower, statusCode) {
+		return classifyReason(FailoverContentPolicy)
 	}
 
 	// Provider-specific patterns
@@ -136,6 +142,10 @@ func ClassifyHTTPError(classifier ErrorClassifier, err error) FailoverClassifica
 	if errors.As(err, &httpErr) {
 		return classifier.Classify(err, httpErr.Status, httpErr.Body)
 	}
+	classification := classifier.Classify(err, 0, err.Error())
+	if classification.Kind == "context_overflow" || classification.Reason != FailoverUnknown {
+		return classification
+	}
 	// Non-HTTP error — check for network errors
 	if isNetworkError(err) {
 		return classifyReason(FailoverTimeout)
@@ -155,7 +165,17 @@ func isContextOverflow(lower string) bool {
 		// Chinese patterns (Qwen/DashScope)
 		"超出最大长度限制",
 		"上下文长度",
+		// Issue 958: Additional patterns
+		"prompt exceeds max length", // ZAI/GLM-5
+		"request_too_large",         // Generic
+		"input is too long",         // DashScope
+		"请求输入过长",                    // Chinese generic
 	)
+}
+
+// IsContextOverflowMessage exports overflow detection for use by pipeline.
+func IsContextOverflowMessage(lower string) bool {
+	return isContextOverflow(lower)
 }
 
 // isNetworkError checks if an error is a network-level failure.
@@ -169,6 +189,16 @@ func isNetworkError(err error) bool {
 	}
 	s := err.Error()
 	return containsAny(s, "connection reset", "broken pipe", "EOF", "timeout", "ECONNREFUSED")
+}
+
+func isContentPolicyRefusal(lower string, statusCode int) bool {
+	if statusCode != 0 && containsAny(lower, "data_inspection_failed", "inappropriate content", "content_policy_violation") {
+		return true
+	}
+	if containsAny(lower, "limited access to this content for safety reasons", "content for safety reasons") {
+		return true
+	}
+	return strings.Contains(lower, "invalid prompt") && strings.Contains(lower, "safety")
 }
 
 // containsAny returns true if s contains any of the substrings.

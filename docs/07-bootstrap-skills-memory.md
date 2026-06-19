@@ -279,6 +279,30 @@ This decision is re-evaluated each time the system prompt is built, so newly hot
 
 ---
 
+## 9.5. Explicit Slash Skill Commands
+
+Users can bypass implicit skill matching by starting a prompt with a slash command:
+
+| Pattern | Behavior |
+|---------|----------|
+| `/<slug> prompt` | Activates the skill by slug and treats `prompt` as the skill input |
+| `/use <slug-or-name> prompt` | Activates the skill by slug or display name |
+| `/list-skills` | Shows available skills for the current agent context |
+| `/help <slug-or-name>` | Shows description and usage guidance for one skill |
+
+Slash detection runs during prompt construction after request context is scoped and before the skills section is built. A matched skill narrows the per-request `SkillFilter` to that skill and injects the full `SKILL.md` instructions into the system prompt for the current turn only. Normal matching remains unchanged for messages that do not start with the configured prefix, path-like strings such as `/home/user/file`, or unresolved commands without suggestions.
+
+Tenant settings live in `system_configs`:
+
+| Key | Default | Behavior |
+|-----|---------|----------|
+| `skills.slash_commands.enabled` | `true` | Enable slash command detection |
+| `skills.slash_commands.suggest_not_found` | `true` | Suggest similar skills for unknown commands |
+| `skills.slash_commands.partial_matching` | `false` | Allow unique prefixes such as `/frontend` |
+| `skills.slash_commands.prefix` | `/` | Single-character command prefix |
+
+---
+
 ## 10. Skills -- BM25 Search
 
 An in-memory BM25 index provides keyword-based skill search. The index is lazily rebuilt whenever the skill version changes.
@@ -320,9 +344,9 @@ flowchart TD
 
 ---
 
-## 12. Skills Grants & Visibility
+## 12. Skills Grants & Access Mode
 
-Skill access is controlled through a 3-tier visibility model with explicit agent and user grants.
+Skill access is controlled through a 3-tier `visibility` field with explicit agent and user grants. The web UI labels this as **Access mode** because `public` means tenant-wide access, not internet publishing.
 
 ```mermaid
 flowchart TD
@@ -335,13 +359,13 @@ flowchart TD
     GRANT -->|No grant| DENIED["Not accessible"]
 ```
 
-### Visibility Levels
+### Access Modes
 
-| Visibility | Access Rule |
-|------------|------------|
-| `public` | All agents and users can discover and use the skill |
-| `private` | Only the owner (`skills.owner_id = userID`) can access |
-| `internal` | Requires an explicit agent grant or user grant |
+| DB value | UI label | Access Rule |
+|----------|----------|------------|
+| `private` | Owner only | Only the owner (`skills.owner_id = userID`) can access |
+| `internal` | Granted agents | Requires an explicit agent grant or user grant |
+| `public` | All tenant agents | All agents and users in scope can discover and use the skill |
 
 ### Grant Tables
 
@@ -572,6 +596,13 @@ flowchart LR
 7. Stores in `episodic_summaries`
 8. Publishes `episodic.created` for downstream workers
 
+**Passive channel memory** (`internal/channelmemory`):
+1. Reads existing channel pending-message groups only when a channel admin enables `passive_memory.enabled`
+2. Redacts secrets, tokens, connection strings, payment-like numbers, emails, phones, and configured excluded users/patterns
+3. Writes extracted candidates to `channel_memory_extraction_items` for review by default
+4. On approval, creates an `episodic_summaries` row with `source_type='channel'`
+5. Publishes `episodic.created` so SemanticWorker/DedupWorker use the same KG path as session memory
+
 **SemanticWorker** (`internal/consolidation/semantic_worker.go`):
 1. Listens to `episodic.created` events
 2. Parses summary for entity mentions + relationships
@@ -657,59 +688,14 @@ WHERE agent_id = $1
 
 ## File Reference
 
-### Bootstrap Files & Constants
-| File | Description |
-|------|-------------|
-| `internal/bootstrap/files.go` | File constants (AgentsFile, SoulFile, UserPredefinedFile, DelegationFile, TeamFile, AvailabilityFile, MemoryFile, etc.), loading, session filtering |
-| `internal/bootstrap/seed.go` | Workspace bootstrap seeding (EnsureWorkspaceFiles, embedded template FS) |
-| `internal/bootstrap/seed_store.go` | Store seeding (SeedToStore for agent-level, SeedUserFiles for per-user) |
-| `internal/bootstrap/load_store.go` | Load context files from DB (LoadFromStore) |
-| `internal/bootstrap/truncate.go` | Truncation pipeline (head/tail split, budget clamping) |
-| `internal/bootstrap/templates/*.md` | Embedded template files: AGENTS.md, SOUL.md, TOOLS.md, IDENTITY.md, USER.md, USER_PREDEFINED.md, BOOTSTRAP.md, BOOTSTRAP_PREDEFINED.md |
+| Module | Path | Purpose |
+|---|---|---|
+| Bootstrap & seeding | `internal/bootstrap/` | File constants, truncation pipeline, workspace seeding, store seeding, embedded template files |
+| System prompt & agent resolver | `internal/agent/` | `BuildSystemPrompt`, section renderers, virtual file injection, context file merging, memory flush |
+| Skills | `internal/skills/` | 5-tier loader, BM25 search, fsnotify hot-reload; grant management in `internal/store/pg/skills*.go` |
+| Memory & consolidation | `internal/memory/`, `internal/consolidation/` | Auto-injector (L0), unified search (L1), consolidation workers (episodic, semantic, dedup, dreaming) |
 
-### System Prompt & Context Injection
-| File | Description |
-|------|-------------|
-| `internal/agent/systemprompt.go` | System prompt builder (BuildSystemPrompt, PromptFull/PromptMinimal modes) |
-| `internal/agent/systemprompt_sections.go` | Section renderers (17+ sections), virtual file handling (DELEGATION.md, TEAM.md, AVAILABILITY.md) |
-| `internal/agent/resolver.go` | Agent resolution, virtual file injection, negative context blocks |
-| `internal/agent/loop_history.go` | Context file merging (base + per-user, base-only preserved) |
-| `internal/agent/memoryflush.go` | Memory flush logic (shouldRunMemoryFlush, runMemoryFlush) |
-| `internal/http/summoner.go` | Agent summoning -- LLM-powered context file generation |
-| `internal/tools/filesystem.go` | File access interception (write_file, read_file), virtual file reminder handling |
-
-### Skills System
-| File | Description |
-|------|-------------|
-| `internal/skills/loader.go` | Skill loader (5-tier hierarchy, BuildSummary, inline/search mode decision) |
-| `internal/skills/search.go` | BM25 search index (tokenization, IDF scoring) |
-| `internal/skills/watcher.go` | fsnotify watcher (500ms debounce, hot-reload, version bumping) |
-| `internal/store/pg/skills.go` | Managed skill store (embedding search, auto-backfill) |
-| `internal/store/pg/skills_grants.go` | Skill grants (agent/user visibility, version pinning, RBAC) |
-
-### V3 Memory System (New)
-| File | Description |
-|------|-------------|
-| `internal/memory/auto_injector.go` | AutoInjector interface for L0 auto-injection into system prompt |
-| `internal/memory/auto_injector_impl.go` | AutoInjector implementation (episodic search + relevance filtering) |
-| `internal/memory/unified_search.go` | Hybrid search across episodic summaries + KG |
-| `internal/memory/l1_cache.go` | L1 cache for fast episodic lookups |
-| `internal/consolidation/workers.go` | Worker registration + event subscriptions |
-| `internal/consolidation/episodic_worker.go` | Extract summaries from sessions → episodic_summaries |
-| `internal/consolidation/semantic_worker.go` | Extract entities/relations from episodic → KG |
-| `internal/consolidation/dedup_worker.go` | Merge duplicate entities via embeddings |
-| `internal/consolidation/dreaming_worker.go` | Batch synthesis of episodic → long-term memory (10m debounce) |
-| `internal/consolidation/l0_abstract.go` | L0 abstract generation (~50 tokens) |
-
-### Memory Store
-| File | Description |
-|------|-------------|
-| `internal/store/episodic_store.go` | EpisodicStore interface (CRUD, search, promotion lifecycle) |
-| `internal/store/evolution_store.go` | EvolutionMetricsStore, EvolutionSuggestionStore interfaces |
-| `internal/store/vault_store.go` | VaultStore interface (document registry, links, search) |
-| `internal/store/pg/episodic*.go` | PG implementation of episodic store |
-| `internal/store/pg/memory_docs.go` | Memory document store (chunking, indexing, embedding, scoping) |
-| `internal/store/pg/memory_search.go` | Hybrid search (FTS + vector merge, weighted scoring, scope filtering) |
+Use `grep` or your editor's symbol search for specific files.
 
 ---
 

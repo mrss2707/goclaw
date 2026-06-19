@@ -11,7 +11,6 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
-
 // PGContactStore implements store.ContactStore backed by Postgres.
 type PGContactStore struct {
 	db           *sql.DB
@@ -62,6 +61,11 @@ func contactWhereClause(ctx context.Context, opts store.ContactListOpts) (string
 	if opts.ChannelType != "" {
 		conditions = append(conditions, fmt.Sprintf("channel_type = $%d", argIdx))
 		args = append(args, opts.ChannelType)
+		argIdx++
+	}
+	if opts.ChannelInstance != "" {
+		conditions = append(conditions, fmt.Sprintf("channel_instance = $%d", argIdx))
+		args = append(args, opts.ChannelInstance)
 		argIdx++
 	}
 	if opts.PeerKind != "" {
@@ -152,14 +156,20 @@ func (s *PGContactStore) GetContactsBySenderIDs(ctx context.Context, senderIDs [
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
 		args[i] = id
 	}
+	// Tenant scope: without this filter a low-priv user in tenant A could probe
+	// arbitrary sender_ids and exfiltrate displayName/username from tenant B.
+	// Sibling reads (GetContactByID, ListMergedContacts) already scope this way.
+	tid := store.TenantIDFromContext(ctx)
+	args = append(args, tid)
+	tenantPH := fmt.Sprintf("$%d", len(args))
 
 	query := fmt.Sprintf(`SELECT DISTINCT ON (sender_id)
 		id, channel_type, channel_instance, sender_id, user_id,
 		display_name, username, avatar_url, peer_kind, contact_type, thread_id, thread_type, merged_id,
 		first_seen_at, last_seen_at
 		FROM channel_contacts
-		WHERE sender_id IN (%s)
-		ORDER BY sender_id, last_seen_at DESC`, strings.Join(placeholders, ","))
+		WHERE sender_id IN (%s) AND tenant_id = %s
+		ORDER BY sender_id, last_seen_at DESC`, strings.Join(placeholders, ","), tenantPH)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

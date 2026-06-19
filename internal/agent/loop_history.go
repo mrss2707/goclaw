@@ -17,7 +17,7 @@ import (
 // buildMessages constructs the full message list for an LLM request.
 // Returns the messages and whether BOOTSTRAP.md was present in context files
 // (used by the caller for auto-cleanup without an extra DB roundtrip).
-func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, summary, userMessage, extraSystemPrompt, sessionKey, channel, channelType, chatTitle, peerKind, userID string, historyLimit int, skillFilter []string, lightContext bool) ([]providers.Message, bool) {
+func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, summary, userMessage, extraSystemPrompt, sessionKey, channel, channelType, bitrixPortalDomain, chatTitle, chatID, peerKind, userID, senderName string, historyLimit int, skillFilter []string, lightContext bool) ([]providers.Message, bool) {
 	var messages []providers.Message
 
 	// Build system prompt — 3-layer mode resolution: runtime > auto-detect > config
@@ -117,6 +117,16 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 		}
 	}
 
+	slashReq := &RunRequest{
+		SessionKey: sessionKey,
+		UserID:     userID,
+		SenderID:   store.SenderIDFromContext(ctx),
+		Channel:    channel,
+		ChatID:     chatID,
+		PeerKind:   peerKind,
+	}
+	userMessage, extraSystemPrompt, skillFilter = l.applySkillSlashCommand(ctx, slashReq, userMessage, extraSystemPrompt, skillFilter)
+
 	// Build tool list, filtering out skill_manage when skill_evolve is off.
 	// Also applies ChannelAware filtering so channel-specific tools don't
 	// appear in ## Tooling when the current channel doesn't support them.
@@ -147,7 +157,13 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 	}
 	// Always build MCP tool descriptions for inline tools — in hybrid search
 	// mode the kept inline tools still need descriptions in the system prompt.
-	mcpToolDescs := l.buildMCPToolDescs(toolNames)
+	// A-G1 fix (260512): scope MCP descriptions to the calling actor's available
+	// tools. Otherwise lookupMCPDescFromUserTools surfaces descriptions from
+	// any user's cache → LLM sees tools it can't actually call (executeToolForActor
+	// scoped to actorUserID returns "tool not found"). Compute actor via
+	// resolveActorUserID — same key the agent loop uses to fetch per-user MCP creds.
+	actorUserID := resolveActorUserID(userID, store.SenderIDFromContext(ctx), peerKind, channelType)
+	mcpToolDescs := l.buildMCPToolDescs(toolNames, actorUserID)
 
 	// Bootstrap DM mode: only restrict tools for open agents (identity being created).
 	// Predefined agents keep full capabilities — BOOTSTRAP.md guides behavior.
@@ -204,9 +220,13 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 		Workspace:              promptWorkspace,
 		Channel:                channel,
 		ChannelType:            channelType,
+		BitrixPortalDomain:     bitrixPortalDomain,
+		ChatID:                 chatID,
 		ChatTitle:              chatTitle,
 		PeerKind:               peerKind,
 		OwnerIDs:               l.ownerIDs,
+		SenderID:               store.SenderIDFromContext(ctx),
+		SenderName:             senderName,
 		Mode:                   mode,
 		ToolNames:              toolNames,
 		SkillsSummary:          l.resolveSkillsSummary(ctx, skillFilter),
@@ -231,6 +251,7 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 		SandboxWorkspaceAccess: l.sandboxWorkspaceAccess,
 		ShellDenyGroups:        l.shellDenyGroups,
 		SelfEvolve:             l.selfEvolve,
+		TTSAutoMode:            l.ttsAutoMode,
 		ProviderType:           providerTypeOf(l.provider),
 		CredentialCLIContext:   l.buildCredentialCLIContext(ctx),
 		IsBootstrap:            hadBootstrap && l.agentType != store.AgentTypePredefined,
@@ -256,10 +277,10 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 		})
 	}
 
-	// History pipeline matching TS: limitHistoryTurns → pruneContext → sanitizeHistory.
+	// History pipeline: limitHistoryTurns → sanitizeHistory.
+	// Pruning is owned by PruneStage in the pipeline (single entry point).
 	trimmed := limitHistoryTurns(history, historyLimit)
-	pruned := pruneContextMessages(trimmed, l.contextWindow, l.contextPruningCfg, l.tokenCounter, l.model)
-	sanitized, droppedCount := sanitizeHistory(pruned)
+	sanitized, droppedCount := sanitizeHistory(trimmed)
 	messages = append(messages, sanitized...)
 
 	// If orphaned messages were found and dropped, persist the cleaned history

@@ -143,6 +143,16 @@
       "save": "Lưu",
       "saving": "Đang lưu..."
     },
+    "execSettings": {
+      "title": "Cài đặt Exec",
+      "description": "Cấu hình thời gian chờ lệnh host cho công cụ exec tích hợp.",
+      "timeoutSeconds": "Thời gian chờ (giây)",
+      "timeoutHint": "Phạm vi cho phép: {{min}}-{{max}} giây.",
+      "sandboxHint": "Lần chạy Docker sandbox dùng cài đặt thời gian chờ sandbox của agent.",
+      "cancel": "Hủy",
+      "save": "Lưu",
+      "saving": "Đang lưu..."
+    },
     "searchChain": {
       "title": "Chuỗi nhà cung cấp tìm kiếm web",
       "description": "Kéo để sắp xếp lại nhà cung cấp tìm kiếm. Nhà cung cấp đầu tiên được bật với API key hợp lệ sẽ được thử trước.",
@@ -180,6 +190,27 @@
       "save": "Lưu",
       "saving": "Đang lưu..."
     },
+    "sttForm": {
+      "title": "Cài đặt STT",
+      "description": "Cấu hình nhà cung cấp chuyển giọng nói thành văn bản cho tin nhắn thoại.",
+      "providersLabel": "Nhà cung cấp",
+      "providersPlaceholder": "Chọn nhà cung cấp",
+      "elevenlabsSectionTitle": "ElevenLabs",
+      "elevenlabsApiKeyLabel": "API Key",
+      "elevenlabsDefaultLanguageLabel": "Ngôn ngữ mặc định",
+      "proxySectionTitle": "Proxy",
+      "proxyUrlLabel": "URL Proxy",
+      "proxyApiKeyLabel": "API Key Proxy",
+      "proxyTenantIdLabel": "Tenant ID Proxy",
+      "whatsappEnabledLabel": "Bật STT cho WhatsApp",
+      "whatsappPrivacyWarning": "Bật STT cho WhatsApp sẽ phá vỡ mã hóa đầu cuối cho tin nhắn thoại gửi đến agent này.",
+      "providersRequiredError": "Phải chọn ít nhất một nhà cung cấp.",
+      "cancel": "Hủy",
+      "save": "Lưu",
+      "saving": "Đang lưu...",
+      "saveSuccess": "Đã lưu cài đặt STT",
+      "saveFailed": "Lưu cài đặt STT thất bại"
+    },
     "extractorChain": {
       "title": "Web Fetch — Chuỗi bộ trích xuất",
       "description": "Danh sách bộ trích xuất nội dung theo thứ tự. Mỗi URL được thử từ trên xuống cho đến khi một bộ trả về nội dung chất lượng.",
@@ -211,7 +242,10 @@
       "addProvider": "Thêm provider",
       "cancel": "Hủy",
       "save": "Lưu",
-      "saving": "Đang lưu..."
+      "saving": "Đang lưu...",
+      "imageModelLabel": "Mô hình ảnh",
+      "imageModelDefaultOption": "Mặc định · gpt-image-2 (khuyến nghị)",
+      "imageModelLegacyOption": "Cũ · gpt-image-1.5"
     },
     "toast": {
       "toggled": "Đã cập nhật công cụ",

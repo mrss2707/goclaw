@@ -72,33 +72,84 @@ func (t *ReadAudioTool) resolveAudioFile(ctx context.Context, mediaID string) (p
 // callProvider dispatches audio analysis to the appropriate provider API.
 // Gemini: uses File API (upload → poll → file_data in generateContent).
 // OpenAI: uses input_audio content part in chat completions.
-// Others: falls back to base64 in image_url (best effort).
+// Transcription models: use the OpenAI-compatible audio transcription endpoint.
 func (t *ReadAudioTool) callProvider(ctx context.Context, cp credentialProvider, providerName, model string, params map[string]any) ([]byte, *providers.Usage, error) {
 	prompt := GetParamString(params, "prompt", "Analyze this audio and describe its contents.")
 	data, _ := params["data"].([]byte)
 	mime := GetParamString(params, "mime", "audio/mpeg")
 
-	// Provider-specific paths require API credentials; skip when cp is nil
-	// (e.g. OAuth-based providers that don't expose static keys).
+	// Provider-specific paths require API credentials. Fail-fast (no silent
+	// fallback to chat/completions) for any path we know won't work without
+	// keys: gemini File API, openai input_audio, and any transcription-named
+	// model under any ptype (e.g. openai_compat → DashScope qwen-audio).
 	ptype := GetParamString(params, "_provider_type", providerTypeFromName(providerName))
-	if cp == nil && (ptype == "gemini" || ptype == "openai") {
-		slog.Info("read_audio: no API credentials, falling back to Chat API", "provider", providerName)
+	if cp == nil && (ptype == "gemini" || ptype == "openai" || isTranscriptionModel(model)) {
+		return nil, nil, fmt.Errorf("read_audio: provider %q requires API credentials for model %q", providerName, model)
 	}
 	if cp != nil {
+		// Transcription models always go to /v1/audio/transcriptions regardless
+		// of ptype — orthogonal to chat-vs-input_audio routing. Covers both
+		// native openai (whisper-1, gpt-4o-transcribe) and openai_compat
+		// providers exposing a /v1/audio/transcriptions endpoint.
+		if isTranscriptionModel(model) {
+			slog.Info("read_audio: using openai transcription API", "provider", providerName, "model", model, "size", len(data), "mime", mime)
+			chatReq := providers.ChatRequest{
+				Messages: []providers.Message{{Role: "user", Content: prompt}},
+				Model:    model,
+				Options:  map[string]any{"max_tokens": 16384},
+			}
+			reservation, reserveErr := reserveToolLLMUsage(ctx, t.usageCaps, t.Name(), providerName, model, chatReq)
+			if reserveErr != nil {
+				return nil, nil, reserveErr
+			}
+			resp, err := openaiTranscriptionCall(ctx, cp.APIKey(), cp.APIBase(), model, data, mime)
+			if reservation != nil {
+				reservation.Reconcile(ctx, resp, err)
+			}
+			if err != nil {
+				return nil, nil, fmt.Errorf("openai transcription call: %w", err)
+			}
+			return []byte(resp.Content), resp.Usage, nil
+		}
+
 		// Gemini: use File API (inlineData doesn't work for audio).
 		if ptype == "gemini" {
 			slog.Info("read_audio: using gemini file API", "provider", providerName, "model", model, "size", len(data), "mime", mime)
+			chatReq := providers.ChatRequest{
+				Messages: []providers.Message{{Role: "user", Content: prompt}},
+				Model:    model,
+				Options:  map[string]any{"max_tokens": 16384},
+			}
+			reservation, reserveErr := reserveToolLLMUsage(ctx, t.usageCaps, t.Name(), providerName, model, chatReq)
+			if reserveErr != nil {
+				return nil, nil, reserveErr
+			}
 			resp, err := geminiFileAPICall(ctx, cp.APIKey(), model, prompt, data, mime, 120*time.Second)
+			if reservation != nil {
+				reservation.Reconcile(ctx, resp, err)
+			}
 			if err != nil {
 				return nil, nil, fmt.Errorf("gemini file API: %w", err)
 			}
 			return []byte(resp.Content), resp.Usage, nil
 		}
 
-		// OpenAI: use input_audio content part (supports wav, mp3).
+		// Native OpenAI chat-audio (gpt-4o-audio-preview etc.): input_audio content part.
 		if ptype == "openai" {
 			slog.Info("read_audio: using openai input_audio API", "provider", providerName, "model", model, "size", len(data), "mime", mime)
+			chatReq := providers.ChatRequest{
+				Messages: []providers.Message{{Role: "user", Content: prompt}},
+				Model:    model,
+				Options:  map[string]any{"max_tokens": 16384},
+			}
+			reservation, reserveErr := reserveToolLLMUsage(ctx, t.usageCaps, t.Name(), providerName, model, chatReq)
+			if reserveErr != nil {
+				return nil, nil, reserveErr
+			}
 			resp, err := openaiAudioCall(ctx, cp.APIKey(), cp.APIBase(), model, prompt, data, mime)
+			if reservation != nil {
+				reservation.Reconcile(ctx, resp, err)
+			}
 			if err != nil {
 				return nil, nil, fmt.Errorf("openai audio call: %w", err)
 			}
@@ -106,31 +157,7 @@ func (t *ReadAudioTool) callProvider(ctx context.Context, cp credentialProvider,
 		}
 	}
 
-	// Other providers: try standard Chat API with base64 audio as image_url (best effort).
-	p, err := t.registry.Get(ctx, providerName)
-	if err != nil {
-		return nil, nil, fmt.Errorf("provider %q not available: %w", providerName, err)
-	}
-
-	slog.Info("read_audio: using chat API fallback", "provider", providerName, "model", model, "size", len(data))
-	resp, err := p.Chat(ctx, providers.ChatRequest{
-		Messages: []providers.Message{
-			{
-				Role:    "user",
-				Content: prompt,
-				Images:  []providers.ImageContent{{MimeType: mime, Data: base64.StdEncoding.EncodeToString(data)}},
-			},
-		},
-		Model: model,
-		Options: map[string]any{
-			"max_tokens":  16384,
-			"temperature": 0.2,
-		},
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("chat API: %w", err)
-	}
-	return []byte(resp.Content), resp.Usage, nil
+	return nil, nil, fmt.Errorf("read_audio: unsupported audio route for provider %q (type %q) model %q; supported routes are Gemini File API, native OpenAI input_audio, or OpenAI-compatible transcription models", providerName, ptype, model)
 }
 
 // openaiAudioCall sends audio to OpenAI using the input_audio content part.

@@ -17,12 +17,14 @@ import { MediaProviderChainForm } from "./media-provider-chain-form";
 import { KGSettingsForm } from "./kg-settings-form";
 import { WebFetchExtractorChainForm } from "./web-fetch-extractor-chain-form";
 import { WebSearchChainForm } from "./web-search-chain-form";
-import { TtsProviderForm } from "./tts-provider-form";
+import { SttProviderForm } from "./stt-provider-form";
+import { ExecSettingsForm } from "./exec-settings-form";
 
+const EXEC_TOOL = "exec";
 const KG_TOOL = "knowledge_graph_search";
 const WEB_FETCH_TOOL = "web_fetch";
 const WEB_SEARCH_TOOL = "web_search";
-const TTS_TOOL = "tts";
+const STT_TOOL = "stt";
 
 interface Props {
   tool: BuiltinToolData | null;
@@ -60,7 +62,8 @@ export function BuiltinToolSettingsDialog({
   const isKG = tool?.name === KG_TOOL;
   const isWebFetch = tool?.name === WEB_FETCH_TOOL;
   const isWebSearch = tool?.name === WEB_SEARCH_TOOL;
-  const isTts = tool?.name === TTS_TOOL;
+  const isStt = tool?.name === STT_TOOL;
+  const isExec = tool?.name === EXEC_TOOL;
   const wide = isMedia || isKG || isWebFetch || isWebSearch;
 
   // Tenant-scope overlay: prefer the tenant override when present; fall back
@@ -83,15 +86,21 @@ export function BuiltinToolSettingsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className={wide ? "sm:max-w-2xl" : "sm:max-w-md"}>
         {modeBadge}
-        {isWebSearch && tool ? (
+        {isExec && tool ? (
+          <ExecSettingsForm
+            initialSettings={initialSettings}
+            onSave={(settings) => onSave(tool.name, settings).then(() => onOpenChange(false))}
+            onCancel={() => onOpenChange(false)}
+          />
+        ) : isWebSearch && tool ? (
           <WebSearchChainForm
             initialSettings={initialSettings}
             secretsSet={tool.secrets_set}
             onSave={(settings) => onSave(tool.name, settings).then(() => onOpenChange(false))}
             onCancel={() => onOpenChange(false)}
           />
-        ) : isTts && tool ? (
-          <TtsProviderForm
+        ) : isStt && tool ? (
+          <SttProviderForm
             initialSettings={initialSettings}
             onSave={(settings) => onSave(tool.name, settings).then(() => onOpenChange(false))}
             onCancel={() => onOpenChange(false)}

@@ -54,6 +54,8 @@ const (
 	ChannelContextScopeKey contextKey = "goclaw_channel_context_scope"
 	// AgentAudioKey carries the immutable agent audio snapshot for TTS tool dispatch.
 	AgentAudioKey contextKey = "goclaw_agent_audio"
+	// UserUUIDKey is the context key for the user UUID (net-new identity system, distinct from UserIDKey).
+	UserUUIDKey contextKey = "goclaw_user_uuid"
 )
 
 // AgentAudioSnapshot is an immutable snapshot of agent audio config carried through
@@ -95,6 +97,19 @@ func ShellDenyGroupsFromContext(ctx context.Context) map[string]bool {
 		return rc.ShellDenyGroups
 	}
 	return nil
+}
+
+// WithUserUUID returns a new context with the given user UUID (net-new identity system).
+func WithUserUUID(ctx context.Context, id uuid.UUID) context.Context {
+	return context.WithValue(ctx, UserUUIDKey, id)
+}
+
+// UserUUIDFromContext extracts the user UUID from context. Returns uuid.Nil if not set.
+func UserUUIDFromContext(ctx context.Context) uuid.UUID {
+	if v, ok := ctx.Value(UserUUIDKey).(uuid.UUID); ok && v != uuid.Nil {
+		return v
+	}
+	return uuid.Nil
 }
 
 // WithUserID returns a new context with the given user ID.

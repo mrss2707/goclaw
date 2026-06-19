@@ -16,7 +16,7 @@ var schemaSQL string
 
 // SchemaVersion is the current SQLite schema version.
 // Bump this when adding new migration steps below.
-const SchemaVersion = 49
+const SchemaVersion = 51
 
 // migrations maps version → SQL to apply when upgrading FROM that version.
 // schema.sql always represents the LATEST full schema (for fresh DBs).
@@ -852,6 +852,10 @@ CREATE INDEX IF NOT EXISTS idx_skill_user_grants_tenant ON skill_user_grants(ten
 	47: addSkillSelfEvolutionTables,
 	// Version 48 → 49: append-only usage event analytics.
 	48: addUsageEventAnalyticsTables,
+	// Version 49 → 50: multi-user identity tables (users, user_sessions, user_tenant_links).
+	49: addUserIdentityTables,
+	// Version 50 → 51: user-owned LLM providers.
+	50: addUserProvidersTable,
 }
 
 const addUsageEventAnalyticsTables = `
@@ -939,6 +943,63 @@ CREATE INDEX IF NOT EXISTS idx_usage_event_rollups_tenant_hour
     ON usage_event_rollups(tenant_id, bucket_hour DESC);
 CREATE INDEX IF NOT EXISTS idx_usage_event_rollups_resource_hour
     ON usage_event_rollups(tenant_id, resource_type, resource_name, bucket_hour DESC);`
+
+const addUserIdentityTables = `
+CREATE TABLE IF NOT EXISTS users (
+    id                TEXT NOT NULL PRIMARY KEY,
+    email             VARCHAR(255),
+    google_id         VARCHAR(255),
+    password_hash     VARCHAR(255),
+    display_name      VARCHAR(255),
+    avatar_url        TEXT,
+    email_verified    BOOLEAN NOT NULL DEFAULT 0,
+    verification_code VARCHAR(6),
+    verification_exp  TEXT,
+    locale            VARCHAR(5) NOT NULL DEFAULT 'en',
+    metadata          TEXT NOT NULL DEFAULT '{}',
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id         TEXT NOT NULL PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    jti        VARCHAR(255) NOT NULL,
+    expires_at TEXT NOT NULL,
+    metadata   TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_sessions_jti ON user_sessions(jti);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions(expires_at);
+CREATE TABLE IF NOT EXISTS user_tenant_links (
+    id         TEXT NOT NULL PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    tenant_id  TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    role       VARCHAR(20) NOT NULL DEFAULT 'owner',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(user_id, tenant_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_tenant_links_user ON user_tenant_links(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_tenant_links_tenant ON user_tenant_links(tenant_id);`
+
+const addUserProvidersTable = `
+CREATE TABLE IF NOT EXISTS user_providers (
+    id            TEXT NOT NULL PRIMARY KEY,
+    user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name          VARCHAR(50) NOT NULL,
+    display_name  VARCHAR(255),
+    provider_type VARCHAR(30) NOT NULL DEFAULT 'openai_compat',
+    api_base      TEXT,
+    api_key       TEXT,
+    enabled       BOOLEAN NOT NULL DEFAULT 1,
+    settings      TEXT NOT NULL DEFAULT '{}',
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(user_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_user_providers_user ON user_providers(user_id);`
 
 const addSkillSelfEvolutionTables = `
 CREATE TABLE IF NOT EXISTS skill_evolution_settings (

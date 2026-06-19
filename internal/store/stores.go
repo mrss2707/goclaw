@@ -60,4 +60,9 @@ type Stores struct {
 
 	// UsageCaps is Standard/PostgreSQL only in the first budget-control rollout.
 	UsageCaps UsageCapStore
+
+	// Multi-user identity stores
+	Users        UserStore
+	UserSessions UserSessionStore
+	UserProviders UserProviderStore
 }

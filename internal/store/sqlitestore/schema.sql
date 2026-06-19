@@ -2278,3 +2278,76 @@ CREATE TABLE IF NOT EXISTS skill_versions (
     UNIQUE(skill_id, version)
 );
 CREATE INDEX IF NOT EXISTS idx_skill_versions_tenant_skill ON skill_versions(tenant_id, skill_id, version DESC);
+
+-- ============================================================
+-- Table: users (multi-user identity)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS users (
+    id                TEXT NOT NULL PRIMARY KEY,
+    email             VARCHAR(255),
+    google_id         VARCHAR(255),
+    password_hash     VARCHAR(255),
+    display_name      VARCHAR(255),
+    avatar_url        TEXT,
+    email_verified    BOOLEAN NOT NULL DEFAULT 0,
+    verification_code VARCHAR(6),
+    verification_exp  TEXT,
+    locale            VARCHAR(5) NOT NULL DEFAULT 'en',
+    metadata          TEXT NOT NULL DEFAULT '{}',
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;
+
+-- ============================================================
+-- Table: user_sessions
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id         TEXT NOT NULL PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    jti        VARCHAR(255) NOT NULL,
+    expires_at TEXT NOT NULL,
+    metadata   TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_sessions_jti ON user_sessions(jti);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions(expires_at);
+
+-- ============================================================
+-- Table: user_tenant_links
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS user_tenant_links (
+    id         TEXT NOT NULL PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    tenant_id  TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    role       VARCHAR(20) NOT NULL DEFAULT 'owner',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(user_id, tenant_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_tenant_links_user ON user_tenant_links(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_tenant_links_tenant ON user_tenant_links(tenant_id);
+
+-- ============================================================
+-- Table: user_providers
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS user_providers (
+    id            TEXT NOT NULL PRIMARY KEY,
+    user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name          VARCHAR(50) NOT NULL,
+    display_name  VARCHAR(255),
+    provider_type VARCHAR(30) NOT NULL DEFAULT 'openai_compat',
+    api_base      TEXT,
+    api_key       TEXT,
+    enabled       BOOLEAN NOT NULL DEFAULT 1,
+    settings      TEXT NOT NULL DEFAULT '{}',
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(user_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_user_providers_user ON user_providers(user_id);

@@ -2,7 +2,7 @@ import { Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 interface SetupStepperProps {
-  currentStep: 1 | 2 | 3 | 4 | 5;
+  currentStep: 1 | 2 | 3 | 4;
   completedSteps: number[];
 }
 
@@ -14,7 +14,6 @@ export function SetupStepper({ currentStep, completedSteps }: SetupStepperProps)
     { num: 2, label: t("steps.model") },
     { num: 3, label: t("steps.agent") },
     { num: 4, label: t("steps.channel"), sublabel: t("steps.channelOptional") },
-    { num: 5, label: t("steps.admin") },
   ];
 
   return (

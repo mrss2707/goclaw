@@ -8,7 +8,6 @@ import { StepProvider } from "./step-provider";
 import { StepModel } from "./step-model";
 import { StepAgent } from "./step-agent";
 import { StepChannel } from "./step-channel";
-import { StepAdmin } from "./step-admin";
 import { SetupCompleteModal } from "./setup-complete-modal";
 import { Building2 } from "lucide-react";
 import { ROUTES, SUPPORTED_LANGUAGES, LANGUAGE_LABELS, LOCAL_STORAGE_KEYS } from "@/lib/constants";
@@ -86,7 +85,7 @@ export function SetupPage() {
   const { currentTenantId, currentTenantSlug } = useTenants();
   const { currentStep, loading, providers, agents } = useBootstrapStatus();
   const { statuses: oauthStatuses } = useChatGPTOAuthProviderStatuses(providers);
-  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [createdProvider, setCreatedProvider] = useState<ProviderData | null>(null);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [createdAgent, setCreatedAgent] = useState<AgentData | null>(null);
@@ -112,8 +111,7 @@ export function SetupPage() {
   if (step > 1) completedSteps.push(1);
   if (step > 2) completedSteps.push(2);
   if (step > 3) completedSteps.push(3);
-  if (step > 4) completedSteps.push(4);
-  if (showComplete) { completedSteps.push(1, 2, 3, 4, 5); }
+  if (showComplete) { completedSteps.push(1, 2, 3, 4); }
 
   // For resuming: find existing provider/agent from server data
   const readyOAuthProviders = new Set(
@@ -174,15 +172,8 @@ export function SetupPage() {
         <StepChannel
           agent={activeAgent}
           onBack={() => setStep(3)}
-          onComplete={() => setStep(5)}
-          onSkip={() => setStep(5)}
-        />
-      )}
-
-      {step === 5 && (
-        <StepAdmin
-          onBack={() => setStep(4)}
           onComplete={handleFinish}
+          onSkip={handleFinish}
         />
       )}
 

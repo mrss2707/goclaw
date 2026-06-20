@@ -7,7 +7,8 @@
     "model": "Model",
     "agent": "Agent",
     "channel": "Channel",
-    "channelOptional": "(Optional)"
+    "channelOptional": "(Optional)",
+    "admin": "Admin Account"
   },
   "complete": {
     "title": "Setup Complete!",
@@ -114,6 +115,24 @@
   },
   "common": {
     "back": "Back"
+  },
+  "admin": {
+    "title": "Create Admin Account",
+    "description": "Set up your administrator account to manage the gateway.",
+    "email": "Email",
+    "emailHint": "Your admin email address.",
+    "password": "Password",
+    "passwordHint": "Minimum 8 characters with uppercase, lowercase, and numbers.",
+    "displayName": "Display Name",
+    "displayNameHint": "Your display name. Optional.",
+    "creating": "Creating...",
+    "create": "Create Admin Account",
+    "created": "Admin account created successfully",
+    "errors": {
+      "emailRequired": "Email is required",
+      "passwordRequired": "Password is required",
+      "failedCreate": "Failed to create admin account"
+    }
   },
   "skipSetup": "Skip setup and go to dashboard",
   "skipSetupConfirm": "Are you sure you want to skip setup? You can always configure providers and agents later from the dashboard.",

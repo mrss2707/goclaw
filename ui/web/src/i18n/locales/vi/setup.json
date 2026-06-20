@@ -7,7 +7,8 @@
     "model": "Model",
     "agent": "Agent",
     "channel": "Channel",
-    "channelOptional": "(Tùy chọn)"
+    "channelOptional": "(Tùy chọn)",
+    "admin": "Tài khoản Admin"
   },
   "complete": {
     "title": "Thiết lập hoàn tất!",
@@ -114,6 +115,24 @@
   },
   "common": {
     "back": "Quay lại"
+  },
+  "admin": {
+    "title": "Tạo tài khoản Admin",
+    "description": "Thiết lập tài khoản quản trị viên để quản lý gateway.",
+    "email": "Email",
+    "emailHint": "Địa chỉ email admin của bạn.",
+    "password": "Mật khẩu",
+    "passwordHint": "Tối thiểu 8 ký tự, bao gồm chữ hoa, chữ thường và số.",
+    "displayName": "Tên hiển thị",
+    "displayNameHint": "Tên hiển thị của bạn. Tùy chọn.",
+    "creating": "Đang tạo...",
+    "create": "Tạo tài khoản Admin",
+    "created": "Đã tạo tài khoản admin",
+    "errors": {
+      "emailRequired": "Email là bắt buộc",
+      "passwordRequired": "Mật khẩu là bắt buộc",
+      "failedCreate": "Không thể tạo tài khoản admin"
+    }
   },
   "skipSetup": "Bỏ qua cài đặt và vào dashboard",
   "skipSetupConfirm": "Bạn có chắc muốn bỏ qua? Bạn luôn có thể cấu hình provider và agent sau từ dashboard.",

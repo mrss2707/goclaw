@@ -1,41 +1,41 @@
 {
+  "subtitle": "Đăng nhập vào bảng điều khiển gateway",
+  "firstAdmin": {
+    "title": "Tạo Tài Khoản Admin",
+    "description": "Tạo tài khoản quản trị để quản lý gateway.",
+    "email": "Email",
+    "emailHint": "Địa chỉ email quản trị.",
+    "password": "Mật khẩu",
+    "passwordHint": "Tối thiểu 8 ký tự, gồm chữ hoa, chữ thường và số.",
+    "displayName": "Tên hiển thị",
+    "displayNameHint": "Tên hiển thị của bạn. Không bắt buộc.",
+    "create": "Tạo Tài Khoản Admin",
+    "creating": "Đang tạo...",
+    "created": "Tài khoản admin đã được tạo thành công",
+    "errors": {
+      "emailRequired": "Email là bắt buộc",
+      "passwordRequired": "Mật khẩu là bắt buộc",
+      "failedCreate": "Không thể tạo tài khoản admin"
+    }
+  },
+  "emailLogin": {
+    "email": "Email",
+    "password": "Mật khẩu",
+    "signIn": "Đăng Nhập",
+    "signingIn": "Đang đăng nhập...",
+    "errors": {
+      "emailRequired": "Email là bắt buộc",
+      "passwordRequired": "Mật khẩu là bắt buộc",
+      "failedLogin": "Email hoặc mật khẩu không đúng"
+    }
+  },
+  "cannotCheckSetup": "Không thể kết nối đến gateway. Kiểm tra server đã chạy chưa.",
   "selectTenant": "Chọn tổ chức",
   "selectTenantDescription": "Chọn tổ chức để tiếp tục",
   "allTenantsOption": "Tất cả tổ chức",
   "allTenantsDescription": "Xem dữ liệu từ tất cả tổ chức",
   "noAccess": "Không có quyền",
   "noAccessDescription": "Bạn không có quyền truy cập tổ chức nào. Liên hệ quản trị viên.",
-  "pairing": {
-    "approved": "Truy cập đã được phê duyệt! Đang chuyển hướng...",
-    "askAdmin": "Yêu cầu quản trị viên phê duyệt mã này:",
-    "cancel": "Hủy",
-    "connecting": "Đang kết nối...",
-    "errorCannotConnect": "Không thể kết nối đến gateway.",
-    "errorConnectionLost": "Mất kết nối. Vui lòng thử lại.",
-    "noTokenNeeded": "Không cần token. Mã ghép nối sẽ được tạo để quản trị viên phê duyệt.",
-    "orRun": "Hoặc chạy:",
-    "requestAccess": "Yêu cầu truy cập",
-    "userId": "User ID",
-    "userIdPlaceholder": "your-user-id",
-    "waitingForApproval": "Đang chờ phê duyệt..."
-  },
-  "subtitle": "Đăng nhập vào bảng điều khiển gateway",
-  "tabs": {
-    "pairing": "Ghép nối",
-    "token": "Token"
-  },
-  "token": {
-    "connect": "Kết nối",
-    "connecting": "Đang kết nối...",
-    "errorCannotConnect": "Không thể kết nối đến gateway. Kiểm tra server đã chạy chưa.",
-    "errorInvalidCredentials": "Thông tin xác thực không hợp lệ. Kiểm tra token và user ID.",
-    "errorServer": "Server trả về {{status}}. Vui lòng thử lại.",
-    "gatewayToken": "Gateway Token",
-    "tokenPlaceholder": "Bearer token",
-    "userId": "User ID",
-    "userIdPlaceholder": "your-user-id",
-    "userIdHint": "Dùng \"system\" để có toàn quyền hệ thống"
-  },
   "noAccessHint": "Yêu cầu quản trị viên thêm bạn vào tenant, hoặc đăng nhập bằng tài khoản khác.",
   "logout": "Đăng xuất"
 }

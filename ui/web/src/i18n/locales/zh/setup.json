@@ -7,7 +7,8 @@
     "model": "模型",
     "agent": "Agent",
     "channel": "Channel",
-    "channelOptional": "（可选）"
+    "channelOptional": "（可选）",
+    "admin": "管理员账户"
   },
   "complete": {
     "title": "设置完成！",
@@ -114,6 +115,24 @@
   },
   "common": {
     "back": "返回"
+  },
+  "admin": {
+    "title": "创建管理员账户",
+    "description": "设置管理员账户以管理网关。",
+    "email": "邮箱",
+    "emailHint": "您的管理员邮箱地址。",
+    "password": "密码",
+    "passwordHint": "至少 8 个字符，包含大写、小写和数字。",
+    "displayName": "显示名称",
+    "displayNameHint": "您的显示名称。可选。",
+    "creating": "创建中...",
+    "create": "创建管理员账户",
+    "created": "管理员账户创建成功",
+    "errors": {
+      "emailRequired": "邮箱为必填项",
+      "passwordRequired": "密码为必填项",
+      "failedCreate": "创建管理员账户失败"
+    }
   },
   "skipSetup": "跳过设置，直接进入仪表盘",
   "skipSetupConfirm": "确定要跳过设置吗？您可以稍后在仪表盘中配置 provider 和 agent。",

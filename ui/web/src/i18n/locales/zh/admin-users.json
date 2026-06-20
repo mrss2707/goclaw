@@ -1,0 +1,25 @@
+{
+  "title": "用户管理",
+  "search": "搜索用户...",
+  "noUsers": "未找到用户",
+  "table": {
+    "email": "邮箱",
+    "displayName": "显示名称",
+    "googleLinked": "Google",
+    "createdAt": "创建时间",
+    "actions": "操作"
+  },
+  "delete": {
+    "title": "删除用户",
+    "confirm": "确定要删除此用户吗？此操作无法撤销。",
+    "button": "删除",
+    "success": "用户已删除",
+    "errors": {
+      "failed": "删除用户失败"
+    }
+  },
+  "errors": {
+    "loadFailed": "无法加载用户列表"
+  },
+  "verified": "已验证"
+}

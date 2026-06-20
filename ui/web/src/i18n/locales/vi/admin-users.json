@@ -1,0 +1,25 @@
+{
+  "title": "Quản lý người dùng",
+  "search": "Tìm kiếm người dùng...",
+  "noUsers": "Không tìm thấy người dùng",
+  "table": {
+    "email": "Email",
+    "displayName": "Tên hiển thị",
+    "googleLinked": "Google",
+    "createdAt": "Ngày tạo",
+    "actions": "Thao tác"
+  },
+  "delete": {
+    "title": "Xóa người dùng",
+    "confirm": "Bạn có chắc muốn xóa người dùng này? Hành động này không thể hoàn tác.",
+    "button": "Xóa",
+    "success": "Đã xóa người dùng",
+    "errors": {
+      "failed": "Không thể xóa người dùng"
+    }
+  },
+  "errors": {
+    "loadFailed": "Không thể tải danh sách người dùng"
+  },
+  "verified": "Đã xác minh"
+}

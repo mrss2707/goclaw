@@ -43,6 +43,8 @@
     "packages": "Gói phần mềm",
     "tenants": "Tổ chức",
     "backupRestore": "Sao lưu & Khôi phục",
-    "workstations": "Workstations"
+    "workstations": "Workstations",
+    "users": "Người dùng",
+    "adminSettings": "Cài đặt"
   }
 }

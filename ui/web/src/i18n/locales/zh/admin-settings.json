@@ -1,0 +1,44 @@
+{
+  "title": "Supermeo 设置",
+  "google": {
+    "title": "Google OAuth2",
+    "description": "为用户配置 Google 登录。",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "clientId": "Client ID",
+    "clientIdHint": "来自 Google Cloud Console 的 OAuth2 Client ID。",
+    "clientSecret": "Client Secret",
+    "clientSecretHint": "Google OAuth2 Client Secret。加密存储。",
+    "redirectUrl": "Redirect URL",
+    "redirectUrlHint": "OAuth2 回调 URL。示例：https://yourdomain.com/v1/auth/google/callback",
+    "save": "保存",
+    "saving": "保存中...",
+    "saved": "设置已保存",
+    "errors": {
+      "loadFailed": "无法加载设置",
+      "saveFailed": "无法保存设置"
+    }
+  },
+  "smtp": {
+    "title": "SMTP 邮件",
+    "description": "配置 SMTP 用于邮箱验证和密码重置。",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "host": "主机",
+    "hostHint": "SMTP 服务器主机名。默认：smtp.gmail.com",
+    "port": "端口",
+    "portHint": "SMTP 服务器端口。默认：587",
+    "username": "用户名",
+    "usernameHint": "SMTP 认证用户名（通常为您的邮箱）。",
+    "password": "密码",
+    "passwordHint": "SMTP 密码或应用专用密码。加密存储。",
+    "fromName": "发件人名称",
+    "fromNameHint": "邮件中的发件人显示名称。默认：GoClaw",
+    "save": "保存",
+    "saving": "保存中...",
+    "saved": "邮件设置已保存",
+    "errors": {
+      "saveFailed": "无法保存邮件设置"
+    }
+  }
+}

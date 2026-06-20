@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router";
 import { AppLayout } from "@/components/layout/app-layout";
 import { RequireAuth } from "@/components/shared/require-auth";
-import { RequireAdmin, RequireCrossTenant } from "@/components/shared/require-role";
+import { RequireAdmin, RequireCrossTenant, RequireOwner } from "@/components/shared/require-role";
 import { RequireSetup } from "@/components/shared/require-setup";
 import { ErrorBoundary } from "@/components/shared/error-boundary";
 import { ROUTES } from "@/lib/constants";
@@ -120,6 +120,12 @@ const WorkstationsPage = lazyWithRetry(() =>
 const TenantSelectorPage = lazyWithRetry(() =>
   import("@/pages/login/tenant-selector").then((m) => ({ default: m.TenantSelectorPage })),
 );
+const AdminSettingsPage = lazyWithRetry(() =>
+  import("@/pages/admin-settings/settings-page").then((m) => ({ default: m.AdminSettingsPage })),
+);
+const AdminUsersPage = lazyWithRetry(() =>
+  import("@/pages/admin-users/users-page").then((m) => ({ default: m.AdminUsersPage })),
+);
 
 function PageLoader() {
   return (
@@ -195,6 +201,8 @@ export function AppRoutes() {
           <Route path={ROUTES.PACKAGES} element={<RequireAdmin><PackagesPage /></RequireAdmin>} />
           <Route path={ROUTES.TENANTS} element={<RequireCrossTenant><TenantsAdminPage /></RequireCrossTenant>} />
           <Route path={ROUTES.TENANT_DETAIL} element={<RequireCrossTenant><TenantDetailPage /></RequireCrossTenant>} />
+          <Route path={ROUTES.ADMIN_SETTINGS} element={<RequireOwner><AdminSettingsPage /></RequireOwner>} />
+          <Route path={ROUTES.ADMIN_USERS} element={<RequireOwner><AdminUsersPage /></RequireOwner>} />
 
           {/* Operator+ pages */}
           <Route path={ROUTES.TRACES} element={<TracesPage key="list" />} />

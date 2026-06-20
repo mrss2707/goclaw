@@ -42,6 +42,8 @@ import enV3Capabilities from "./locales/en/v3-capabilities.json";
 import enBackup from "./locales/en/backup.json";
 import enHooks from "./locales/en/hooks.json";
 import enWorkstations from "./locales/en/workstations.json";
+import enAdminSettings from "./locales/en/admin-settings.json";
+import enAdminUsers from "./locales/en/admin-users.json";
 
 // --- VI namespaces ---
 import viCommon from "./locales/vi/common.json";
@@ -84,6 +86,8 @@ import viV3Capabilities from "./locales/vi/v3-capabilities.json";
 import viBackup from "./locales/vi/backup.json";
 import viHooks from "./locales/vi/hooks.json";
 import viWorkstations from "./locales/vi/workstations.json";
+import viAdminSettings from "./locales/vi/admin-settings.json";
+import viAdminUsers from "./locales/vi/admin-users.json";
 
 // --- ZH namespaces ---
 import zhCommon from "./locales/zh/common.json";
@@ -126,6 +130,8 @@ import zhV3Capabilities from "./locales/zh/v3-capabilities.json";
 import zhBackup from "./locales/zh/backup.json";
 import zhHooks from "./locales/zh/hooks.json";
 import zhWorkstations from "./locales/zh/workstations.json";
+import zhAdminSettings from "./locales/zh/admin-settings.json";
+import zhAdminUsers from "./locales/zh/admin-users.json";
 
 const STORAGE_KEY = "goclaw:language";
 
@@ -149,6 +155,8 @@ const ns = [
   "backup",
   "hooks",
   "workstations",
+  "admin-settings",
+  "admin-users",
 ] as const;
 
 i18n.use(initReactI18next).init({
@@ -172,6 +180,8 @@ i18n.use(initReactI18next).init({
       backup: enBackup,
       hooks: enHooks,
       workstations: enWorkstations,
+      "admin-settings": enAdminSettings,
+      "admin-users": enAdminUsers,
     },
     vi: {
       common: viCommon, sidebar: viSidebar, topbar: viTopbar, login: viLogin,
@@ -192,6 +202,8 @@ i18n.use(initReactI18next).init({
       backup: viBackup,
       hooks: viHooks,
       workstations: viWorkstations,
+      "admin-settings": viAdminSettings,
+      "admin-users": viAdminUsers,
     },
     zh: {
       common: zhCommon, sidebar: zhSidebar, topbar: zhTopbar, login: zhLogin,
@@ -212,6 +224,8 @@ i18n.use(initReactI18next).init({
       backup: zhBackup,
       hooks: zhHooks,
       workstations: zhWorkstations,
+      "admin-settings": zhAdminSettings,
+      "admin-users": zhAdminUsers,
     },
   },
   ns: [...ns],

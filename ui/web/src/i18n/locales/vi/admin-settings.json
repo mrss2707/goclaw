@@ -1,0 +1,44 @@
+{
+  "title": "Cài đặt Supermeo",
+  "google": {
+    "title": "Google OAuth2",
+    "description": "Cấu hình Google Sign-In cho người dùng.",
+    "enabled": "Đã bật",
+    "disabled": "Đã tắt",
+    "clientId": "Client ID",
+    "clientIdHint": "Client ID Google OAuth2 từ Google Cloud Console.",
+    "clientSecret": "Client Secret",
+    "clientSecretHint": "Client secret Google OAuth2. Lưu trữ mã hóa.",
+    "redirectUrl": "Redirect URL",
+    "redirectUrlHint": "URL callback OAuth2. Ví dụ: https://yourdomain.com/v1/auth/google/callback",
+    "save": "Lưu",
+    "saving": "Đang lưu...",
+    "saved": "Đã lưu cài đặt",
+    "errors": {
+      "loadFailed": "Không thể tải cài đặt",
+      "saveFailed": "Không thể lưu cài đặt"
+    }
+  },
+  "smtp": {
+    "title": "SMTP Email",
+    "description": "Cấu hình SMTP để xác minh email và đặt lại mật khẩu.",
+    "enabled": "Đã bật",
+    "disabled": "Đã tắt",
+    "host": "Host",
+    "hostHint": "Hostname máy chủ SMTP. Mặc định: smtp.gmail.com",
+    "port": "Port",
+    "portHint": "Cổng SMTP. Mặc định: 587",
+    "username": "Username",
+    "usernameHint": "Username xác thực SMTP (thường là email của bạn).",
+    "password": "Password",
+    "passwordHint": "Mật khẩu SMTP hoặc App Password. Lưu trữ mã hóa.",
+    "fromName": "Tên người gửi",
+    "fromNameHint": "Tên hiển thị trong email. Mặc định: GoClaw",
+    "save": "Lưu",
+    "saving": "Đang lưu...",
+    "saved": "Đã lưu cài đặt email",
+    "errors": {
+      "saveFailed": "Không thể lưu cài đặt email"
+    }
+  }
+}

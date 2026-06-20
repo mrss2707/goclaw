@@ -1,0 +1,44 @@
+{
+  "title": "Supermeo Settings",
+  "google": {
+    "title": "Google OAuth2",
+    "description": "Configure Google Sign-In for your users.",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "clientId": "Client ID",
+    "clientIdHint": "Your Google OAuth2 client ID from Google Cloud Console.",
+    "clientSecret": "Client Secret",
+    "clientSecretHint": "Your Google OAuth2 client secret. Stored encrypted.",
+    "redirectUrl": "Redirect URL",
+    "redirectUrlHint": "OAuth2 callback URL. Example: https://yourdomain.com/v1/auth/google/callback",
+    "save": "Save",
+    "saving": "Saving...",
+    "saved": "Settings saved successfully",
+    "errors": {
+      "loadFailed": "Failed to load settings",
+      "saveFailed": "Failed to save settings"
+    }
+  },
+  "smtp": {
+    "title": "SMTP Email",
+    "description": "Configure SMTP for email verification and password reset.",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "host": "Host",
+    "hostHint": "SMTP server hostname. Default: smtp.gmail.com",
+    "port": "Port",
+    "portHint": "SMTP server port. Default: 587",
+    "username": "Username",
+    "usernameHint": "SMTP authentication username (usually your email).",
+    "password": "Password",
+    "passwordHint": "SMTP password or App Password. Stored encrypted.",
+    "fromName": "From Name",
+    "fromNameHint": "Sender display name in emails. Default: GoClaw",
+    "save": "Save",
+    "saving": "Saving...",
+    "saved": "Email settings saved successfully",
+    "errors": {
+      "saveFailed": "Failed to save email settings"
+    }
+  }
+}

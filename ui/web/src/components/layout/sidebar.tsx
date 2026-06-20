@@ -139,6 +139,12 @@ export function Sidebar({ collapsed, onNavItemClick }: SidebarProps) {
           <SidebarItem to={ROUTES.API_KEYS} icon={KeyRound} label={t("nav.apiKeys")} collapsed={collapsed} />
           <SidebarItem to={ROUTES.PACKAGES} icon={Blocks} label={t("nav.packages")} collapsed={collapsed} />
           {isOwner && (
+            <SidebarItem to={ROUTES.ADMIN_USERS} icon={Users} label={t("nav.users")} collapsed={collapsed} />
+          )}
+          {isOwner && (
+            <SidebarItem to={ROUTES.ADMIN_SETTINGS} icon={Settings} label={t("nav.adminSettings")} collapsed={collapsed} />
+          )}
+          {isOwner && (
             <SidebarItem to={ROUTES.CONFIG} icon={Settings} label={t("nav.config")} collapsed={collapsed} />
           )}
           <SidebarItem to={ROUTES.APPROVALS} icon={ShieldCheck} label={t("nav.approvals")} collapsed={collapsed} />

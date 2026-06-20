@@ -26,7 +26,7 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" crossorigin="anonymous" />
     <title>GoClaw Dashboard</title>
     <style>
-      #app-loader{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:#fff}
+      #app-loader{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:oklch(0.97 0.005 80)}
       .loader-content{display:flex;flex-direction:column;align-items:center}
       .loader-logo{width:4rem;height:4rem;animation:pulse 1.5s ease-in-out infinite}
       .loader-shimmer{width:10rem;height:3px;margin-top:1rem;overflow:hidden;border-radius:9999px;background:#e4e4e7}
@@ -36,7 +36,7 @@
       .fade-out{opacity:0;transition:opacity 300ms ease}
       @media(prefers-reduced-motion:reduce){.loader-logo{animation:none;opacity:1}.shimmer-bar{animation:none}}
       @media(prefers-color-scheme:dark){
-        #app-loader{background:#09090b}
+        #app-loader{background:oklch(0.15 0.02 45)}
         .loader-shimmer{background:#27272a}
         .shimmer-bar{background:linear-gradient(90deg,transparent,#52525b,transparent)}
       }

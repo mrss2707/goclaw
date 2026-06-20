@@ -84,6 +84,7 @@ var pkgAPIKeyCache *apiKeyCache
 var pkgPairingStore store.PairingStore
 var pkgTenantCache *tenantCache
 var pkgOwnerIDs []string
+var pkgUserAuthFunc func(ctx context.Context, token string) (userID uuid.UUID, tenantID uuid.UUID, role permissions.Role, locale string, err error)
 
 // InitGatewayToken sets the gateway bearer token for HTTP auth.
 // Must be called once during server startup before handling requests.
@@ -120,6 +121,12 @@ func InitPairingAuth(ps store.PairingStore) {
 // Owners get RoleOwner with gateway token; others get RoleAdmin scoped to their tenant.
 func InitOwnerIDs(ids []string) {
 	pkgOwnerIDs = ids
+}
+
+// InitUserAuthFunc sets the JWT authenticator for multi-user HTTP auth.
+// When set, JWT bearer tokens emitted by /v1/auth/login are validated as operator access.
+func InitUserAuthFunc(fn func(ctx context.Context, token string) (userID uuid.UUID, tenantID uuid.UUID, role permissions.Role, locale string, err error)) {
+	pkgUserAuthFunc = fn
 }
 
 // isHTTPOwnerID checks if the user ID is a configured owner.
@@ -164,10 +171,12 @@ type authResult struct {
 	KeyData       *store.APIKeyData // non-nil when authenticated via API key
 	TenantID      uuid.UUID         // resolved tenant; always concrete after resolution
 	TenantSlug    string            // resolved tenant slug for filesystem paths
+	UserID        uuid.UUID         // resolved user ID from JWT auth (empty for gateway token / API key)
+	Locale        string            // resolved locale from JWT auth
 }
 
 // resolveAuth determines the caller's role from the request.
-// Priority: gateway token → API key → no-auth fallback.
+// Priority: gateway token → JWT → API key → no-auth fallback.
 func resolveAuth(r *http.Request) authResult {
 	return resolveAuthWithBearer(r, extractBearerToken(r))
 }
@@ -201,6 +210,24 @@ func resolveAuthWithBearer(r *http.Request, bearer string) authResult {
 		}
 		res.TenantSlug = resolveTenantSlug(r.Context(), res.TenantID)
 		return res
+	}
+	// JWT token → multi-user auth (from /v1/auth/login)
+	if pkgUserAuthFunc != nil && bearer != "" {
+		userID, tenantID, role, locale, err := pkgUserAuthFunc(r.Context(), bearer)
+		if err == nil {
+			res := authResult{
+				Role:          role,
+				Authenticated: true,
+				TenantID:      tenantID,
+				UserID:        userID,
+				Locale:        locale,
+			}
+			if res.TenantID == uuid.Nil {
+				res.TenantID = store.MasterTenantID
+			}
+			res.TenantSlug = resolveTenantSlug(r.Context(), res.TenantID)
+			return res
+		}
 	}
 	// API key → role from scopes
 	if keyData, role := ResolveAPIKey(r.Context(), bearer); role != "" {
@@ -321,11 +348,19 @@ func httpMinRole(method string) permissions.Role {
 // Used by requireAuth middleware and ServeHTTP handlers that do their own auth checks.
 func enrichContext(ctx context.Context, r *http.Request, auth authResult) context.Context {
 	ctx = store.WithLocale(ctx, extractLocale(r))
+	// Prefer locale from JWT auth if available.
+	if auth.Locale != "" {
+		ctx = store.WithLocale(ctx, auth.Locale)
+	}
 	ctx = store.WithRole(ctx, string(auth.Role))
 	userID := extractUserID(r)
+	// JWT auth provides user ID from claims — always use it over header.
+	if auth.UserID != uuid.Nil {
+		userID = auth.UserID.String()
+	}
 	// Security: In dev mode (no gateway token configured), do not trust the
 	// X-GoClaw-User-Id header — force "system" to prevent identity spoofing.
-	if pkgGatewayToken == "" && auth.KeyData == nil && userID != "" {
+	if pkgGatewayToken == "" && auth.KeyData == nil && auth.UserID == uuid.Nil && userID != "" {
 		slog.Warn("security.user_id_header_ignored_no_auth",
 			"attempted_user_id", userID,
 			"ip", r.RemoteAddr,

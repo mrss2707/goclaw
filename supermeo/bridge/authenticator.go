@@ -47,7 +47,7 @@ func (a *DefaultUserAuthenticator) Authenticate(ctx context.Context, token strin
 	return &gateway.UserAuthIdentity{
 		UserID:   user.ID,
 		TenantID: tenantID,
-		Role:     "operator",
+		Role:     "admin",
 		Locale:   user.Locale,
 		Email:    derefStr(user.Email),
 	}, nil

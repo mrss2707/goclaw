@@ -85,6 +85,8 @@ type UserStore interface {
 	UnlinkGoogleID(ctx context.Context, id uuid.UUID) error
 	UpdatePassword(ctx context.Context, id uuid.UUID, passwordHash string) error
 	DeleteUser(ctx context.Context, id uuid.UUID) error
+	CountUsers(ctx context.Context) (int, error)
+	ListUsers(ctx context.Context, offset, limit int) ([]User, int, error)
 }
 
 // UserSessionStore manages JWT session tracking (blacklist).

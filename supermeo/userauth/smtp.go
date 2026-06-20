@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/smtp"
+	"os"
 	"strings"
 )
 
@@ -23,6 +24,20 @@ type SMTPClient struct {
 
 func NewSMTPClient(cfg SMTPConfig) *SMTPClient {
 	return &SMTPClient{config: cfg}
+}
+
+func NewSMTPClientFromEnv() *SMTPClient {
+	port := os.Getenv("SMTP_PORT")
+	if port == "" {
+		port = "587"
+	}
+	return NewSMTPClient(SMTPConfig{
+		Host:     os.Getenv("SMTP_HOST"),
+		Port:     port,
+		Username: os.Getenv("SMTP_USERNAME"),
+		Password: os.Getenv("SMTP_PASSWORD"),
+		FromName: os.Getenv("SMTP_FROM_NAME"),
+	})
 }
 
 func (c *SMTPClient) SendEmail(to, subject, htmlBody string) error {

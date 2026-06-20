@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"os"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -43,6 +44,14 @@ func NewGoogleOAuth2Handler(cfg *GoogleOAuth2Config) *GoogleOAuth2Handler {
 		config:   oauthCfg,
 		stateTTL: 300,
 	}
+}
+
+func NewGoogleOAuth2HandlerFromEnv() *GoogleOAuth2Handler {
+	return NewGoogleOAuth2Handler(&GoogleOAuth2Config{
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
+	})
 }
 
 func (h *GoogleOAuth2Handler) AuthCodeURL(state string) string {

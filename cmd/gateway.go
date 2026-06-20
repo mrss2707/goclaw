@@ -42,6 +42,7 @@ import (
 	kg "github.com/nextlevelbuilder/goclaw/internal/knowledgegraph"
 	mcpbridge "github.com/nextlevelbuilder/goclaw/internal/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/media"
+	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/scheduler"
 	"github.com/nextlevelbuilder/goclaw/internal/skills"
@@ -51,6 +52,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/vault"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 	"github.com/nextlevelbuilder/goclaw/supermeo/bridge"
+	adminpkg "github.com/nextlevelbuilder/goclaw/supermeo/admin"
 	"github.com/nextlevelbuilder/goclaw/supermeo/userauth"
 
 	// Register workstation backend factories via init().
@@ -354,6 +356,14 @@ func runGateway() {
 		authenticator := bridge.NewDefaultUserAuthenticator(pgStores.Users, jwtSvc, mapper)
 		server.UserAuth = authenticator
 
+		httpapi.InitUserAuthFunc(func(ctx context.Context, token string) (uuid.UUID, uuid.UUID, permissions.Role, string, error) {
+			identity, err := authenticator.Authenticate(ctx, token)
+			if err != nil {
+				return uuid.Nil, uuid.Nil, "", "", err
+			}
+			return identity.UserID, identity.TenantID, permissions.Role(identity.Role), identity.Locale, nil
+		})
+
 		userAuthHandler := httpapi.NewUserAuthHandler(pgStores.Users, jwtSvc, mapper, rateLimiter)
 		server.SetUserAuthHandler(userAuthHandler)
 
@@ -363,10 +373,11 @@ func runGateway() {
 		}
 		slog.Info("multi-user auth enabled")
 
-		// Google OAuth2: enable when client ID/secret are configured.
-		if googleClientID := os.Getenv("GOOGLE_CLIENT_ID"); googleClientID != "" {
-			googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
-			googleRedirectURL := os.Getenv("GOOGLE_REDIRECT_URL")
+		// Google OAuth2: enable when client ID/secret are configured (DB first, env fallback).
+		googleClientID := getConfigOrEnv(pgStores.SystemConfigs, "supermeo.google.client_id", "GOOGLE_CLIENT_ID")
+		if googleClientID != "" {
+			googleClientSecret := getConfigOrEnv(pgStores.SystemConfigs, "supermeo.google.client_secret", "GOOGLE_CLIENT_SECRET")
+			googleRedirectURL := getConfigOrEnv(pgStores.SystemConfigs, "supermeo.google.redirect_url", "GOOGLE_REDIRECT_URL")
 			if googleRedirectURL == "" {
 				googleRedirectURL = "http://localhost:18790/v1/auth/google/callback"
 			}
@@ -384,18 +395,19 @@ func runGateway() {
 			}
 		}
 
-		// SMTP email verification: enable when SMTP config is available.
-		if smtpHost := os.Getenv("SMTP_HOST"); smtpHost != "" {
-			smtpPort := os.Getenv("SMTP_PORT")
+		// SMTP email verification: enable when SMTP config is available (DB first, env fallback).
+		smtpHost := getConfigOrEnv(pgStores.SystemConfigs, "supermeo.smtp.host", "SMTP_HOST")
+		if smtpHost != "" {
+			smtpPort := getConfigOrEnv(pgStores.SystemConfigs, "supermeo.smtp.port", "SMTP_PORT")
 			if smtpPort == "" {
 				smtpPort = "587"
 			}
 			smtpCfg := userauth.SMTPConfig{
 				Host:     smtpHost,
 				Port:     smtpPort,
-				Username: os.Getenv("SMTP_USERNAME"),
-				Password: os.Getenv("SMTP_PASSWORD"),
-				FromName: os.Getenv("SMTP_FROM_NAME"),
+				Username: getConfigOrEnv(pgStores.SystemConfigs, "supermeo.smtp.username", "SMTP_USERNAME"),
+				Password: getConfigOrEnv(pgStores.SystemConfigs, "supermeo.smtp.password", "SMTP_PASSWORD"),
+				FromName: getConfigOrEnv(pgStores.SystemConfigs, "supermeo.smtp.from_name", "SMTP_FROM_NAME"),
 			}
 			if smtpCfg.Username != "" && smtpCfg.Password != "" {
 				smtpClient := userauth.NewSMTPClient(smtpCfg)
@@ -405,6 +417,24 @@ func runGateway() {
 				slog.Info("SMTP email verification enabled")
 			}
 		}
+
+		// Admin setup: first-run admin account creation.
+		adminSetupSvc := adminpkg.NewAdminSetupService(pgStores.Users, jwtSvc, mapper, pgStores.SystemConfigs)
+		adminSetupHandler := httpapi.NewAdminSetupHandler(adminSetupSvc, rateLimiter)
+		server.SetAdminSetupHandler(adminSetupHandler)
+		slog.Info("admin setup handler registered")
+
+		// Supermeo config: Google OAuth2 + SMTP config management.
+		adminConfigSvc := adminpkg.NewSupermeoConfigService(pgStores.SystemConfigs)
+		adminConfigHandler := httpapi.NewAdminSupermeoConfigHandler(adminConfigSvc)
+		server.SetAdminConfigHandler(adminConfigHandler)
+		slog.Info("admin config handler registered")
+
+		// User management: list/delete users.
+		adminUsersSvc := adminpkg.NewAdminUsersService(pgStores.Users)
+		adminUsersHandler := httpapi.NewAdminUsersHandler(adminUsersSvc)
+		server.SetAdminUsersHandler(adminUsersHandler)
+		slog.Info("admin users handler registered")
 	}
 
 	// contextFileInterceptor is created inside wireExtras.
@@ -821,4 +851,13 @@ func resolveBackgroundProvider(cfg *config.Config, reg *providers.Registry) (pro
 		}
 	}
 	return nil, ""
+}
+
+func getConfigOrEnv(sysConfigs store.SystemConfigStore, configKey, envKey string) string {
+	if sysConfigs != nil {
+		if v, err := sysConfigs.Get(context.Background(), configKey); err == nil && v != "" {
+			return v
+		}
+	}
+	return os.Getenv(envKey)
 }

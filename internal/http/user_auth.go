@@ -86,7 +86,7 @@ func (h *UserAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	identity := map[string]any{
 		"user_id":   user.ID,
 		"tenant_id": tenantID,
-		"role":      "operator",
+		"role":      "admin",
 		"locale":    user.Locale,
 		"email":     derefStr(user.Email),
 	}

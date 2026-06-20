@@ -689,6 +689,12 @@ func (s *Server) SetGoogleOAuth2Handler(h *httpapi.GoogleOAuth2Handler) { s.hand
 
 func (s *Server) SetEmailVerifyHandler(h *httpapi.EmailVerifyHandler) { s.handlers = append(s.handlers, h) }
 
+func (s *Server) SetAdminSetupHandler(h *httpapi.AdminSetupHandler) { s.handlers = append(s.handlers, h) }
+
+func (s *Server) SetAdminConfigHandler(h *httpapi.AdminSupermeoConfigHandler) { s.handlers = append(s.handlers, h) }
+
+func (s *Server) SetAdminUsersHandler(h *httpapi.AdminUsersHandler) { s.handlers = append(s.handlers, h) }
+
 // SetAgentStore sets the agent store for context injection in tools_invoke.
 func (s *Server) SetAgentStore(as store.AgentStore) { s.agentStore = as }
 

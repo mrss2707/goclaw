@@ -43,6 +43,7 @@ var mediaCapableTypes = map[string]bool{
 	TypeZaloPersonal: true,
 	TypePancake:      true,
 	TypeFacebook:     true,
+	TypeGoogleChat:   true,
 }
 
 var mediaBatchCapabilities = map[string]MediaBatchCapability{

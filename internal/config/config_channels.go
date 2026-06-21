@@ -61,6 +61,7 @@ type ChannelsConfig struct {
 	Zalo              ZaloConfig               `json:"zalo"`
 	ZaloPersonal      ZaloPersonalConfig       `json:"zalo_personal"`
 	Feishu            FeishuConfig             `json:"feishu"`
+	GoogleChat        GoogleChatConfig          `json:"google_chat"`
 	PendingCompaction *PendingCompactionConfig `json:"pending_compaction,omitempty"` // global pending message compaction settings
 }
 
@@ -241,6 +242,30 @@ type FeishuConfig struct {
 	STTTenantID       string              `json:"stt_tenant_id,omitempty"`
 	STTTimeoutSeconds int                 `json:"stt_timeout_seconds,omitempty"`
 	VoiceAgentID      string              `json:"voice_agent_id,omitempty"`
+}
+
+// GoogleChatConfig configures the Google Chat channel.
+// Supports both Pub/Sub PULL (primary) and PUSH webhook (optional) modes.
+type GoogleChatConfig struct {
+	Enabled            bool                `json:"enabled"`
+	ServiceAccountJSON string              `json:"service_account_json,omitempty"` // inline SA JSON (secret, env-prefer)
+	ServiceAccountFile string              `json:"service_account_file,omitempty"` // path to SA JSON file
+	ProjectID          string              `json:"project_id,omitempty"`           // GCP project ID
+	SubscriptionName   string              `json:"subscription_name,omitempty"`    // Pub/Sub subscription (pull mode)
+	PushEndpointPath   string              `json:"push_endpoint_path,omitempty"`   // webhook path (default "/googlechat/events")
+	AllowFrom          FlexibleStringSlice `json:"allow_from"`
+	DMPolicy           string              `json:"dm_policy,omitempty"`       // "pairing" (default), "allowlist", "open", "disabled"
+	GroupPolicy        string              `json:"group_policy,omitempty"`    // "open" (default), "allowlist", "disabled"
+	RequireMention     *bool               `json:"require_mention,omitempty"` // require @bot mention in spaces (default true)
+	HistoryLimit       int                 `json:"history_limit,omitempty"`   // max pending messages for context (default 50, 0=disabled)
+	StreamEnabled      *bool               `json:"stream_enabled,omitempty"`  // simulate streaming via message PATCH (default true)
+	ReasoningStream    *bool               `json:"reasoning_stream,omitempty"` // show reasoning as separate message (default true)
+	ReactionLevel      string              `json:"reaction_level,omitempty"`  // "off" (default), "minimal", "full" — emoji reactions
+	TextChunkLimit     int                 `json:"text_chunk_limit,omitempty"` // max chars per message chunk (default 4000)
+	BlockReply         *bool               `json:"block_reply,omitempty"`     // override gateway block_reply
+	ChatBehavior       *ChatBehaviorConfig `json:"chat_behavior,omitempty"`   // override gateway chat behavior
+	MediaMaxBytes      int64               `json:"media_max_bytes,omitempty"` // max media download size (default 20MB)
+	ConnectionMode     string              `json:"connection_mode,omitempty"` // "pull" (default), "push"
 }
 
 // ProvidersConfig maps provider name to its config.

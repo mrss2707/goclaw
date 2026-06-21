@@ -405,7 +405,15 @@
     "private_reply_message": {
       "label": "Nội dung DM",
       "help": "Hỗ trợ biến commenter_name và post_title. Để trống dùng mặc định tiếng Anh."
-    }
+    },
+    "service_account_json": { "label": "Service Account JSON" },
+    "service_account_file": { "label": "Tệp Service Account" },
+    "project_id": { "label": "GCP Project ID" },
+    "subscription_name": { "label": "Pub/Sub Subscription" },
+    "push_endpoint_path": { "label": "Đường dẫn Push Endpoint" },
+    "stream_enabled": { "label": "Bật Streaming" },
+    "reasoning_stream": { "label": "Reasoning Stream" },
+    "media_max_bytes": { "label": "Kích thước media tối đa (bytes)" }
   },
   "fieldOptions": {
     "dm_policy": {
@@ -480,7 +488,9 @@
     },
     "connection_mode": {
       "webhook": "Webhook",
-      "websocket": "WebSocket (khuyên dùng)"
+      "websocket": "WebSocket (khuyên dùng)",
+      "pull": "Pull (Pub/Sub)",
+      "push": "Push (Webhook)"
     },
     "topic_session_mode": {
       "disabled": "Tắt",

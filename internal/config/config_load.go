@@ -193,6 +193,13 @@ func (c *Config) applyEnvOverrides() {
 	envStr("GOCLAW_SLACK_APP_TOKEN", &c.Channels.Slack.AppToken)
 	envStr("GOCLAW_SLACK_USER_TOKEN", &c.Channels.Slack.UserToken)
 
+	// Google Chat
+	envStr("GOCLAW_GOOGLECHAT_SERVICE_ACCOUNT", &c.Channels.GoogleChat.ServiceAccountJSON)
+	envStr("GOCLAW_GOOGLECHAT_SERVICE_ACCOUNT_FILE", &c.Channels.GoogleChat.ServiceAccountFile)
+	envStr("GOCLAW_GOOGLECHAT_PROJECT_ID", &c.Channels.GoogleChat.ProjectID)
+	envStr("GOCLAW_GOOGLECHAT_SUBSCRIPTION", &c.Channels.GoogleChat.SubscriptionName)
+	envStr("GOCLAW_GOOGLECHAT_CONNECTION_MODE", &c.Channels.GoogleChat.ConnectionMode)
+
 	// TTS secrets
 	envStr("GOCLAW_TTS_OPENAI_API_KEY", &c.Tts.OpenAI.APIKey)
 	envStr("GOCLAW_TTS_ELEVENLABS_API_KEY", &c.Tts.ElevenLabs.APIKey)
@@ -215,6 +222,13 @@ func (c *Config) applyEnvOverrides() {
 	// WhatsApp is enabled via config or DB instances (no bridge_url needed).
 	if c.Channels.Slack.BotToken != "" && c.Channels.Slack.AppToken != "" {
 		c.Channels.Slack.Enabled = true
+	}
+	// Google Chat auto-enable: requires service account + project ID.
+	// SubscriptionName required for pull mode, optional for push mode.
+	if (c.Channels.GoogleChat.ServiceAccountJSON != "" || c.Channels.GoogleChat.ServiceAccountFile != "") &&
+		c.Channels.GoogleChat.ProjectID != "" &&
+		(c.Channels.GoogleChat.ConnectionMode == "push" || c.Channels.GoogleChat.SubscriptionName != "") {
+		c.Channels.GoogleChat.Enabled = true
 	}
 
 	// Claude CLI provider

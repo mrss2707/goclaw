@@ -113,6 +113,12 @@ export const credentialsSchema: Record<string, FieldDef[]> = {
   // lives on the bitrix_portals row, not the channel instance. Authorize the portal
   // once via /bitrix24/install, then create channel instances against that portal.
   bitrix24: [],
+  google_chat: [
+    { key: "service_account_json", label: "Service Account JSON", type: "password", required: true, help: "Inline service account JSON key (prefer env var GOCLAW_GOOGLECHAT_SERVICE_ACCOUNT)" },
+    { key: "service_account_file", label: "Service Account File", type: "text", placeholder: "/path/to/sa.json", help: "Path to service account JSON file" },
+    { key: "project_id", label: "GCP Project ID", type: "text", required: true },
+    { key: "subscription_name", label: "Pub/Sub Subscription", type: "text", required: true, help: "Required for pull mode; optional for push mode" },
+  ],
 };
 
 // --- Pancake platform options ---
@@ -289,6 +295,21 @@ export const configSchema: Record<string, FieldDef[]> = {
     ...chatBehaviorOverrideFields,
     { key: "mcp_server_name", label: "MCP Server Name", type: "text", advanced: true, placeholder: "bitrix24-prod", help: "Optional — name from mcp_servers table. Must be set together with MCP Base URL to enable per-user MCP credential auto-onboard. Leave both empty to disable." },
     { key: "mcp_base_url", label: "MCP Base URL", type: "text", advanced: true, placeholder: "https://mcp.example.com", help: "Optional — HTTPS root of the partner MCP server. Channel POSTs {mcp_base_url}/api/auto-onboard to mint per-user credentials on first-sight. The MCP server authenticates each call via the caller's Bitrix access_token, so no admin secret is required." },
+  ],
+  google_chat: [
+    { key: "connection_mode", label: "Connection Mode", type: "select", options: [{ value: "pull", label: "Pull (Pub/Sub)" }, { value: "push", label: "Push (Webhook)" }], defaultValue: "pull" },
+    { key: "push_endpoint_path", label: "Push Endpoint Path", type: "text", defaultValue: "/googlechat/events", showWhen: { key: "connection_mode", value: "push" } },
+    { key: "dm_policy", label: "DM Policy", type: "select", options: dmPolicyOptions, defaultValue: "pairing" },
+    { key: "group_policy", label: "Group Policy", type: "select", options: groupPolicyOptions, defaultValue: "open" },
+    { key: "require_mention", label: "Require @Mention", type: "boolean", defaultValue: true, help: "Only respond in spaces when the bot is explicitly @mentioned" },
+    { key: "history_limit", label: "History Limit", type: "number", defaultValue: 50, help: "Max pending messages for context (0 = disabled)" },
+    { key: "stream_enabled", label: "Stream Enabled", type: "boolean", defaultValue: true, advanced: true, help: "Simulate streaming via message PATCH" },
+    { key: "reasoning_stream", label: "Reasoning Stream", type: "boolean", defaultValue: true, advanced: true, help: "Show reasoning as separate message" },
+    { key: "reaction_level", label: "Reaction Level", type: "select", options: [{ value: "off", label: "Off" }, { value: "minimal", label: "Minimal" }, { value: "full", label: "Full" }], defaultValue: "off" },
+    { key: "text_chunk_limit", label: "Text Chunk Limit", type: "number", defaultValue: 4000, advanced: true, help: "Max characters per message chunk" },
+    { key: "media_max_bytes", label: "Max Media Size (bytes)", type: "number", defaultValue: 20971520, advanced: true, help: "Max inbound media download size (default 20MB)" },
+    { key: "allow_from", label: "Allow From", type: "tags", placeholder: "user IDs (users/xxx)" },
+    ...chatBehaviorOverrideFields,
   ],
 };
 

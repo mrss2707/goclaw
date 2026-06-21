@@ -25,13 +25,18 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/gateway/methods"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
+	googlechat "github.com/nextlevelbuilder/goclaw/supermeo/channels/googlechat"
 )
 
-// registerConfigChannels registers config-based channels as fallback when no DB instances are loaded.
+// registerConfigChannels registers config-based channels.
+// When an instanceLoader is present, config-based channels are only registered for channel types
+// that have no DB instances loaded — DB instances take precedence over config for the same type.
 // audioMgr is optional (nil = STT disabled for channels).
 func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, msgBus *bus.MessageBus, pgStores *store.Stores, instanceLoader *channels.InstanceLoader, audioMgr *audio.Manager) {
+	// Build set of channel types already loaded from DB (they take precedence).
+	dbLoaded := map[string]bool{}
 	if instanceLoader != nil {
-		return
+		dbLoaded = instanceLoader.LoadedTypes()
 	}
 
 	recordMissingConfig := func(name, detail string) {
@@ -140,6 +145,18 @@ func registerConfigChannels(cfg *config.Config, channelMgr *channels.Manager, ms
 				channelMgr.RegisterChannel(channels.TypeFeishu, f)
 				slog.Info("feishu/lark channel enabled (config)")
 			}
+		}
+	}
+
+	if cfg.Channels.GoogleChat.Enabled && !dbLoaded[channels.TypeGoogleChat] {
+		if cfg.Channels.GoogleChat.ServiceAccountJSON == "" && cfg.Channels.GoogleChat.ServiceAccountFile == "" {
+			recordMissingConfig(channels.TypeGoogleChat, "Set channels.google_chat.service_account_json or GOCLAW_GOOGLECHAT_SERVICE_ACCOUNT in config.")
+		} else if gc, err := googlechat.New(cfg.Channels.GoogleChat, msgBus, pgStores.Pairing, nil); err != nil {
+			channelMgr.RecordFailure(channels.TypeGoogleChat, "", err)
+			slog.Error("failed to initialize googlechat channel", "error", err)
+		} else {
+			channelMgr.RegisterChannel(channels.TypeGoogleChat, gc)
+			slog.Info("googlechat channel enabled (config)")
 		}
 	}
 }

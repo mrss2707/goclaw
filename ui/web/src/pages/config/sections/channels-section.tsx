@@ -21,6 +21,7 @@ const CHANNEL_META: Record<string, { label: string; secretEnv: string; secretFie
   whatsapp: { label: "WhatsApp", secretEnv: "", secretField: "" },
   zalo: { label: "Zalo", secretEnv: "GOCLAW_ZALO_TOKEN", secretField: "token" },
   feishu: { label: "Feishu / Lark", secretEnv: "GOCLAW_FEISHU_APP_SECRET", secretField: "app_secret" },
+  google_chat: { label: "Google Chat", secretEnv: "GOCLAW_GOOGLECHAT_SERVICE_ACCOUNT", secretField: "service_account_json" },
 };
 
 const DM_POLICIES = ["pairing", "allowlist", "open", "disabled"];

@@ -18,6 +18,10 @@ func NewUserTenantMapper(tenants store.TenantStore) *UserTenantMapper {
 	return &UserTenantMapper{tenants: tenants}
 }
 
+func (m *UserTenantMapper) Tenants() store.TenantStore {
+	return m.tenants
+}
+
 func (m *UserTenantMapper) GetOrCreateTenant(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
 	slug := "user-" + userID.String()
 	uidStr := userID.String()

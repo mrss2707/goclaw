@@ -405,7 +405,15 @@
     "private_reply_message": {
       "label": "私信内容",
       "help": "支持 commenter_name 和 post_title 占位符。留空使用英文默认文本。"
-    }
+    },
+    "service_account_json": { "label": "Service Account JSON" },
+    "service_account_file": { "label": "Service Account 文件" },
+    "project_id": { "label": "GCP 项目 ID" },
+    "subscription_name": { "label": "Pub/Sub 订阅" },
+    "push_endpoint_path": { "label": "推送端点路径" },
+    "stream_enabled": { "label": "启用流式传输" },
+    "reasoning_stream": { "label": "推理流" },
+    "media_max_bytes": { "label": "最大媒体大小 (bytes)" }
   },
   "fieldOptions": {
     "dm_policy": {
@@ -480,7 +488,9 @@
     },
     "connection_mode": {
       "webhook": "Webhook",
-      "websocket": "WebSocket（推荐）"
+      "websocket": "WebSocket（推荐）",
+      "pull": "Pull (Pub/Sub)",
+      "push": "Push (Webhook)"
     },
     "topic_session_mode": {
       "disabled": "禁用",

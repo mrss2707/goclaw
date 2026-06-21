@@ -44,10 +44,15 @@ func (a *DefaultUserAuthenticator) Authenticate(ctx context.Context, token strin
 		return nil, fmt.Errorf("authenticate: %w", err)
 	}
 
+	role := "admin"
+	if dbRole, err := a.mapper.Tenants().GetUserRole(ctx, tenantID, user.ID.String()); err == nil && dbRole != "" {
+		role = dbRole
+	}
+
 	return &gateway.UserAuthIdentity{
 		UserID:   user.ID,
 		TenantID: tenantID,
-		Role:     "admin",
+		Role:     role,
 		Locale:   user.Locale,
 		Email:    derefStr(user.Email),
 	}, nil

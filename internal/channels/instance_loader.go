@@ -47,6 +47,7 @@ type InstanceLoader struct {
 	pairingSvc        store.PairingStore
 	mu                sync.Mutex
 	loaded            map[string]struct{} // channel names managed by this loader
+	types             map[string]struct{} // channel types managed by this loader
 }
 
 // NewInstanceLoader creates a new InstanceLoader.
@@ -65,6 +66,7 @@ func NewInstanceLoader(
 		msgBus:     msgBus,
 		pairingSvc: pairingSvc,
 		loaded:     make(map[string]struct{}),
+		types:      make(map[string]struct{}),
 	}
 }
 
@@ -244,11 +246,25 @@ func (l *InstanceLoader) LoadedNames() map[string]struct{} {
 	return result
 }
 
+// LoadedTypes returns the set of channel types that have at least one loaded DB instance.
+// Used by config-based channel registration to skip types already managed by DB instances.
+func (l *InstanceLoader) LoadedTypes() map[string]bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	types := make(map[string]bool, len(l.types))
+	for t := range l.types {
+		types[t] = true
+	}
+	return types
+}
+
 // loadInstance creates and registers a single channel from a DB instance (caller must hold lock).
 // If autoStart is true, the channel is started immediately (used by Reload).
 // If false, the caller is responsible for starting (used by LoadAll, where StartAll handles it).
 func (l *InstanceLoader) loadInstance(ctx context.Context, inst store.ChannelInstanceData, autoStart bool) error {
 	l.loaded[inst.Name] = struct{}{}
+	l.types[inst.ChannelType] = struct{}{}
 
 	factory, ok := l.factories[inst.ChannelType]
 	if !ok {

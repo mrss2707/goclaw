@@ -317,13 +317,18 @@ func maskInstance(inst store.ChannelInstanceData) map[string]any {
 		"updated_at":      inst.UpdatedAt,
 	}
 
-	// Mask credentials: show keys with "***" values
+	// Mask credentials: show keys with "***" values,
+	// except for non-secret identifier fields (project_id, subscription_name).
 	if len(inst.Credentials) > 0 {
 		var raw map[string]any
 		if json.Unmarshal(inst.Credentials, &raw) == nil {
 			masked := make(map[string]any, len(raw))
-			for k := range raw {
-				masked[k] = "***"
+			for k, v := range raw {
+				if k == "project_id" || k == "subscription_name" {
+					masked[k] = v
+				} else {
+					masked[k] = "***"
+				}
 			}
 			result["credentials"] = masked
 		} else {

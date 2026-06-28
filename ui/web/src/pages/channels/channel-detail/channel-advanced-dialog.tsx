@@ -23,9 +23,9 @@ interface ChannelAdvancedDialogProps {
 
 const ESSENTIAL_CONFIG_KEYS = new Set(["dm_policy", "group_policy", "require_mention", "mention_mode"]);
 
-const NETWORK_KEYS = new Set(["api_server", "proxy", "domain", "connection_mode", "webhook_port", "webhook_path", "webhook_url"]);
-const LIMITS_KEYS = new Set(["history_limit", "media_max_mb", "text_chunk_limit"]);
-const STREAMING_KEYS = new Set(["dm_stream", "group_stream", "draft_transport", "reasoning_delivery", "native_stream", "debounce_delay", "thread_ttl"]);
+const NETWORK_KEYS = new Set(["api_server", "proxy", "domain", "connection_mode", "webhook_port", "webhook_path", "webhook_url", "push_endpoint_path"]);
+const LIMITS_KEYS = new Set(["history_limit", "media_max_mb", "media_max_bytes", "text_chunk_limit"]);
+const STREAMING_KEYS = new Set(["dm_stream", "group_stream", "draft_transport", "reasoning_delivery", "reasoning_stream", "stream_enabled", "native_stream", "debounce_delay", "thread_ttl"]);
 const BEHAVIOR_KEYS = new Set(["reaction_level", "link_preview", "render_mode", "topic_session_mode"]);
 const ACCESS_KEYS = new Set(["allow_from", "group_allow_from"]);
 
@@ -42,7 +42,10 @@ function getAdvancedFields(channelType: string) {
 }
 
 function deriveInitialValues(instance: ChannelInstanceData): Record<string, unknown> {
-  const config = normalizeReasoningDeliveryConfig((instance.config ?? {}) as Record<string, unknown>);
+  const rawConfig = (instance.config ?? {}) as Record<string, unknown>;
+  // Google Chat uses legacy reasoning_stream (boolean), not reasoning_delivery.
+  // Normalization deletes reasoning_stream, breaking the toggle. Skip it for GC.
+  const config = instance.channel_type === "google_chat" ? rawConfig : normalizeReasoningDeliveryConfig(rawConfig);
   // Only keep advanced keys (exclude essential + groups)
   return Object.fromEntries(
     Object.entries(config).filter(([k]) => !ESSENTIAL_CONFIG_KEYS.has(k) && k !== "groups"),
@@ -80,7 +83,15 @@ export function ChannelAdvancedDialog({
         Object.entries(values).filter(([, v]) => v !== undefined && v !== "" && v !== null),
       );
       // Merge: preserve essential keys and groups from existing, overwrite advanced keys
-      const merged = normalizeReasoningDeliveryConfig({ ...existingConfig, ...cleanAdvanced });
+      // Google Chat uses legacy reasoning_stream — skip normalize to preserve the toggle value.
+      let merged: Record<string, unknown> = { ...existingConfig, ...cleanAdvanced };
+      if (instance.channel_type !== "google_chat") {
+        merged = normalizeReasoningDeliveryConfig(merged);
+      }
+      // Always strip reasoning_delivery from Google Chat config (backend only reads reasoning_stream).
+      if (instance.channel_type === "google_chat") {
+        delete merged.reasoning_delivery;
+      }
       await onUpdate({ config: merged });
       onOpenChange(false);
     } catch { // toast shown by hook

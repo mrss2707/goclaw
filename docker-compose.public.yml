@@ -1,4 +1,4 @@
-# Public NAT deployment for https://io.supermeo.com:88.
+# Public NAT deployment for https://claw.supermeo.com (port 443 HTTPS).
 #
 # This file is intentionally self-contained instead of layering the optional
 # compose files, because those overlays publish internal ports by default.
@@ -6,9 +6,9 @@
 #
 # Prerequisites:
 #   1. ./prepare-env.sh
-#   2. Fill .env secrets and set GOCLAW_ALLOWED_ORIGINS=https://io.supermeo.com:88
-#   3. Put TLS files in deploy/certs/io.supermeo.com.crt and
-#      deploy/certs/io.supermeo.com.key
+#   2. Fill .env secrets and set GOCLAW_ALLOWED_ORIGINS=https://claw.supermeo.com
+#   3. Put TLS files in deploy/certs/claw.supermeo.com.crt and
+#      deploy/certs/claw.supermeo.com.key
 #   4. docker build -t goclaw-sandbox:bookworm-slim -f Dockerfile.sandbox .
 #   5. Optional Claude CLI: set ENABLE_CLAUDE_CLI=true and add the host
 #      credentials mount from docker-compose.claude-cli.yml.
@@ -66,7 +66,7 @@ services:
       GOCLAW_CONFIG: /app/data/config.json
       GOCLAW_GATEWAY_TOKEN: ${GOCLAW_GATEWAY_TOKEN:?set GOCLAW_GATEWAY_TOKEN in .env}
       GOCLAW_ENCRYPTION_KEY: ${GOCLAW_ENCRYPTION_KEY:?set GOCLAW_ENCRYPTION_KEY in .env}
-      GOCLAW_ALLOWED_ORIGINS: ${GOCLAW_ALLOWED_ORIGINS:-https://io.supermeo.com:88}
+      GOCLAW_ALLOWED_ORIGINS: ${GOCLAW_ALLOWED_ORIGINS:-https://claw.supermeo.com}
       GOCLAW_POSTGRES_DSN: postgres://${POSTGRES_USER:-goclaw}:${POSTGRES_PASSWORD_DSN:?set POSTGRES_PASSWORD_DSN in .env}@postgres:5432/${POSTGRES_DB:-goclaw}?sslmode=disable
       GOCLAW_REDIS_DSN: redis://redis:6379/0
       GOCLAW_BROWSER_REMOTE_URL: ws://chrome:9222
@@ -107,8 +107,6 @@ services:
       - goclaw-net
     restart: unless-stopped
     init: true
-    security_opt:
-      - no-new-privileges:true
     cap_drop: []
     cap_add:
       - NET_BIND_SERVICE
@@ -190,6 +188,26 @@ services:
     networks:
       - goclaw-net
     restart: unless-stopped
+
+  weknora-mcp:
+    container_name: weknora-mcp
+    build:
+      context: /Volumes/ExDATA/PORTABLES/weknora-mcp-server
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      WEKNORA_BASE_URL: https://know.supermeo.com/api/v1
+      WEKNORA_API_KEY: ${WEKNORA_API_KEY}
+    networks:
+      - goclaw-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --timeout=3 http://127.0.0.1:8000/ >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   upgrade:
     profiles:

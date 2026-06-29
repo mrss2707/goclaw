@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { supermeoPresets } from "./agent-presets-supermeo";
 
 export interface AgentPreset {
   label: string;
@@ -44,5 +45,6 @@ export function useAgentPresets(): AgentPreset[] {
       prompt: t("presets.astrologer.prompt"),
       emoji: "🔮",
     },
+    ...supermeoPresets,
   ];
 }

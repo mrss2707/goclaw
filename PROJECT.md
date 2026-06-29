@@ -82,6 +82,16 @@ git merge upstream/dev                                # Merge vào dev branch
 # internal/** (trừ 5 file trên) → ZERO conflict
 ```
 
+### Adding Agent Presets (Modularized)
+
+To minimize merge conflicts, supermeo-specific agent presets live in a dedicated file:
+
+- **Where:** `ui/web/src/pages/agents/agent-presets-supermeo.ts`
+- **Format:** Export an `AgentPreset[]` — each entry has `{ label, prompt, emoji }`
+- **Prompts:** Hardcoded in English (no i18n dependency) — keeps locale files untouched and merge surface minimal
+- **Wiring:** Import `supermeoPresets` and spread into the array in `agent-presets.ts` (2 lines)
+- **Reference:** See existing presets in `agent-presets-supermeo.ts` for structure and tone examples
+
 ## System Architecture
 
 ### Entry Points

@@ -142,3 +142,17 @@ Workers in `internal/consolidation/` (12 files). Register via `workers.Register(
 | **Config:** Secrets in `.env.local` or env vars. Never in config.json. | Security leak |
 | **Dual-DB:** PG migration + SQLite schema.sql + schema.go patch. Always both. | Schema drift |
 | **Tenant scope:** `RoleAdmin` ≠ tenant check. Use `requireMasterScope` for global tables. | Data leak |
+
+## Deploy (docker-compose.public.yml)
+
+Container name `app`, dùng external volumes `goclaw-public_*`. Build + up:
+
+```bash
+docker compose -f docker-compose.public.yml up -d --build
+docker compose -f docker-compose.public.yml --profile maintenance run --rm upgrade
+```
+
+**Lưu ý:**
+- `GOCLAW_JWT_SECRET` phải có trong `.env` thì multi-user auth mới hoạt động.
+- Volumes external → data tồn tại độc lập với container, không bị mất khi rebuild.
+- Không dùng `make up-build` — nó deploy compose khác, không mount được volume data public.

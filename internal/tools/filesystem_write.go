@@ -244,7 +244,11 @@ func (t *WriteFileTool) executeInSandbox(ctx context.Context, path, content, san
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
-	containerCwd, cwdErr := sandboxCwdForHostPath(mountWorkspace, mountWorkspace, sandbox.DefaultContainerWorkdir)
+	agentWs := ToolWorkspaceFromCtx(ctx)
+	if agentWs == "" {
+		agentWs = t.workspace
+	}
+	containerCwd, cwdErr := sandboxCwdForHostPath(agentWs, mountWorkspace, sandbox.DefaultContainerWorkdir)
 	if cwdErr != nil {
 		return ErrorResult(fmt.Sprintf("sandbox path mapping: %v", cwdErr))
 	}
@@ -253,6 +257,12 @@ func (t *WriteFileTool) executeInSandbox(ctx context.Context, path, content, san
 		return ErrorResult(fmt.Sprintf("sandbox error: %v", err))
 	}
 	containerPath := ResolveSandboxPath(path, containerCwd)
+
+	// Explicit cross-scope write rejection: prevent an agent in chat_1 from
+	// writing into chat_2 through a resolved cross-scope absolute path.
+	if err := rejectCrossScopeWrite(containerPath, containerCwd); err != nil {
+		return ErrorResult(err.Error())
+	}
 
 	if err := bridge.WriteFile(ctx, containerPath, content, appendMode); err != nil {
 		verb := "write"

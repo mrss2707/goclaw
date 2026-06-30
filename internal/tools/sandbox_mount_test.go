@@ -62,6 +62,23 @@ func TestEffectiveSandboxWorkspacePrefersTenantWorkspace(t *testing.T) {
 	}
 }
 
+func TestEffectiveSandboxWorkspacePrefersTeamRoot(t *testing.T) {
+	globalWorkspace := "/srv/goclaw/workspace"
+	teamRoot := "/app/workspace/teams/team-1"
+	agentLeaf := "/app/workspace/teams/team-1/chat-1"
+
+	ctx := WithToolTeamRoot(context.Background(), teamRoot)
+	ctx = WithToolWorkspace(ctx, agentLeaf)
+
+	got, err := effectiveSandboxWorkspace(ctx, globalWorkspace)
+	if err != nil {
+		t.Fatalf("effectiveSandboxWorkspace returned error: %v", err)
+	}
+	if got != teamRoot {
+		t.Fatalf("effectiveSandboxWorkspace = %q, want team root %q", got, teamRoot)
+	}
+}
+
 func TestEffectiveSandboxWorkspaceFailsClosedWithoutTenantWorkspace(t *testing.T) {
 	ctx := store.WithTenantID(context.Background(), uuid.New())
 
@@ -306,3 +323,26 @@ func TestExecSandboxFailsClosedWhenTenantWorkspaceMissing(t *testing.T) {
 		t.Fatalf("sandbox manager should not be called, got workspace %q", mgr.workspace)
 	}
 }
+
+func TestSandboxWriteFileCrossScopeRejected(t *testing.T) {
+	globalWorkspace := "/srv/goclaw/workspace"
+	teamRoot := "/srv/goclaw/workspace/teams/team-1"
+	agentLeaf := "/srv/goclaw/workspace/teams/team-1/chat-1"
+
+	mgr := &recordingSandboxManager{}
+	tool := NewSandboxedWriteFileTool(globalWorkspace, true, mgr)
+
+	ctx := WithToolTeamRoot(context.Background(), teamRoot)
+	ctx = WithToolWorkspace(ctx, agentLeaf)
+	ctx = WithToolSandboxKey(ctx, "session-1")
+
+	// Write to sibling chat scope — should be rejected
+	result := tool.executeInSandbox(ctx, "../chat-2/evil.txt", "malicious content", "session-1", true, false)
+	if !result.IsError {
+		t.Fatalf("executeInSandbox succeeded for cross-scope write, want error")
+	}
+	if result.ForLLM == "" {
+		t.Fatalf("executeInSandbox returned empty error result")
+	}
+}
+

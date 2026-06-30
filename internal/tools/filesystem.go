@@ -200,11 +200,15 @@ func (t *ReadFileTool) executeInSandbox(ctx context.Context, path, sandboxKey st
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
-	containerCwd, cwdErr := sandboxCwdForHostPath(mountWorkspace, mountWorkspace, sandbox.DefaultContainerWorkdir)
+	agentWs := ToolWorkspaceFromCtx(ctx)
+	if agentWs == "" {
+		agentWs = t.workspace
+	}
+	containerCwd, cwdErr := sandboxCwdForHostPath(agentWs, mountWorkspace, sandbox.DefaultContainerWorkdir)
 	if cwdErr != nil {
 		return ErrorResult(fmt.Sprintf("sandbox path mapping: %v", cwdErr))
 	}
-	bridge, err := t.getFsBridge(ctx, sandboxKey, mountWorkspace, containerCwd)
+	bridge, err := t.getFsBridge(ctx, sandboxKey, mountWorkspace, sandbox.DefaultContainerWorkdir)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("sandbox error: %v", err))
 	}

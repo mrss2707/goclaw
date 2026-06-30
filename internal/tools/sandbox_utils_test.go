@@ -109,10 +109,10 @@ func TestResolveSandboxPath(t *testing.T) {
 			want:         "/workspace/agent-a/subdir/file.txt",
 		},
 		{
-			name:         "absolute sibling workspace path is rejected to cwd",
+			name:         "absolute sibling workspace path resolves (no clamp)",
 			path:         "/workspace/agent-a/file.txt",
 			containerCwd: "/workspace/agent-b",
-			want:         "/workspace/agent-b",
+			want:         "/workspace/agent-a/file.txt",
 		},
 		{
 			name:         "absolute path inside cwd stays absolute",
@@ -121,10 +121,10 @@ func TestResolveSandboxPath(t *testing.T) {
 			want:         "/workspace/agent-a/file.txt",
 		},
 		{
-			name:         "relative parent escape is rejected to cwd",
+			name:         "relative parent escape resolves (no clamp)",
 			path:         "../agent-b/file.txt",
 			containerCwd: "/workspace/agent-a",
-			want:         "/workspace/agent-a",
+			want:         "/workspace/agent-b/file.txt",
 		},
 		{
 			name:         "dot path",
@@ -139,6 +139,64 @@ func TestResolveSandboxPath(t *testing.T) {
 			got := ResolveSandboxPath(tt.path, tt.containerCwd)
 			if got != tt.want {
 				t.Errorf("ResolveSandboxPath(%q, %q) = %q, want %q", tt.path, tt.containerCwd, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRejectCrossScopeWrite(t *testing.T) {
+	tests := []struct {
+		name         string
+		resolvedPath string
+		containerCwd string
+		wantErr      bool
+	}{
+		{
+			name:         "same scope — file inside cwd",
+			resolvedPath: "/workspace/chat_1/file.txt",
+			containerCwd: "/workspace/chat_1",
+			wantErr:      false,
+		},
+		{
+			name:         "same scope — exact cwd",
+			resolvedPath: "/workspace/chat_1",
+			containerCwd: "/workspace/chat_1",
+			wantErr:      false,
+		},
+		{
+			name:         "sibling scope — write to chat_2 from chat_1",
+			resolvedPath: "/workspace/chat_2/evil.txt",
+			containerCwd: "/workspace/chat_1",
+			wantErr:      true,
+		},
+		{
+			name:         "team root — write to root from chat",
+			resolvedPath: "/workspace/file.txt",
+			containerCwd: "/workspace/chat_1",
+			wantErr:      true,
+		},
+		{
+			name:         "outside mount — write outside /workspace",
+			resolvedPath: "/etc/passwd",
+			containerCwd: "/workspace/chat_1",
+			wantErr:      true,
+		},
+		{
+			name:         "relative escape — ../chat_2/evil.txt",
+			resolvedPath: "/workspace/chat_2/evil.txt",
+			containerCwd: "/workspace/chat_1",
+			wantErr:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := rejectCrossScopeWrite(tt.resolvedPath, tt.containerCwd)
+			if tt.wantErr && err == nil {
+				t.Errorf("rejectCrossScopeWrite(%q, %q) = nil, want error", tt.resolvedPath, tt.containerCwd)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("rejectCrossScopeWrite(%q, %q) = %v, want nil", tt.resolvedPath, tt.containerCwd, err)
 			}
 		})
 	}

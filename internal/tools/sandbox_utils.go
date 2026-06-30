@@ -38,6 +38,10 @@ func SandboxCwd(ctx context.Context, globalWorkspace, containerBase string) (str
 }
 
 func effectiveSandboxWorkspace(ctx context.Context, globalWorkspace string) (string, error) {
+	// Prefer team root so cross-scope reads work within same mount.
+	if teamRoot := ToolTeamRootFromCtx(ctx); teamRoot != "" {
+		return canonicalSandboxWorkspace(teamRoot), nil
+	}
 	if ws := ToolWorkspaceFromCtx(ctx); ws != "" {
 		return canonicalSandboxWorkspace(ws), nil
 	}
@@ -79,21 +83,30 @@ func sandboxCwdForHostPath(hostCwd, mountWorkspace, containerBase string) (strin
 }
 
 // ResolveSandboxPath resolves a tool-provided path (relative or absolute)
-// against the sandbox container CWD. Escapes are rejected to containerCwd so a
-// tool scoped to /workspace/agent-a cannot address /workspace/agent-b.
+// against the sandbox container CWD. Boundary enforcement is delegated to
+// callers (e.g. rejectCrossScopeWrite for write operations).
 func ResolveSandboxPath(filePath, containerCwd string) string {
 	cwd := path.Clean(containerCwd)
 	if cwd == "." || cwd == "/" {
 		cwd = "/workspace"
 	}
-	var resolved string
 	if strings.HasPrefix(filePath, "/") {
-		resolved = path.Clean(filePath)
-	} else {
-		resolved = path.Clean(path.Join(cwd, filePath))
+		return path.Clean(filePath)
 	}
-	if resolved == cwd || strings.HasPrefix(resolved, cwd+"/") {
-		return resolved
+	return path.Clean(path.Join(cwd, filePath))
+}
+
+// rejectCrossScopeWrite returns an error if resolvedPath falls outside the
+// agent's sandbox CWD. This prevents an agent in chat_1 from writing into
+// chat_2 through a cross-scope absolute path after ResolveSandboxPath resolves it.
+func rejectCrossScopeWrite(resolvedPath, containerCwd string) error {
+	cwd := path.Clean(containerCwd)
+	if cwd == "." || cwd == "/" {
+		cwd = "/workspace"
 	}
-	return cwd
+	rp := path.Clean(resolvedPath)
+	if rp == cwd || strings.HasPrefix(rp, cwd+"/") {
+		return nil
+	}
+	return fmt.Errorf("access denied: write path %q is outside the agent workspace scope %q", resolvedPath, containerCwd)
 }

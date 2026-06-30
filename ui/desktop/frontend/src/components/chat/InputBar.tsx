@@ -36,7 +36,7 @@ export function InputBar({ onSend, onStop, disabled, isRunning, placeholder }: I
   }, [text, files, disabled, onSend, clearFiles])
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !(e.nativeEvent as globalThis.KeyboardEvent).isComposing) {
       e.preventDefault()
       handleSend()
     }

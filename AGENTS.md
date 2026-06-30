@@ -2,7 +2,7 @@
 
 PostgreSQL multi-tenant AI agent gateway with WebSocket RPC + HTTP API.
 
-> **ARCHITECTURE:** See `PROJECT.md` for system architecture, `supermeo/` layer, upstream merge strategy, package map, tech stack, memory tiers, provider resolution, current progress.
+> **ARCHITECTURE:** See `PROJECT.md` for system architecture, supermeo/ layer, package map, tech stack, memory tiers, provider resolution, store layer, channels, tools, key numbers, hard rules.
 
 ## Language
 

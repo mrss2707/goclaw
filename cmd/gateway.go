@@ -245,6 +245,17 @@ func runGateway() {
 	} else {
 		toolsReg.SetRateLimiter(nil)
 	}
+
+	// Re-apply user-configured allowed paths for the same reason as the rate
+	// limiter above: setupToolRegistry wired the filesystem tools' AllowPaths
+	// from the JSON5 default before ApplySystemConfigs overlaid
+	// system_configs['allowed_paths'], so DB-driven paths never reached the tools.
+	// Re-run now that cfg reflects the DB value. Safe: server has not started, no
+	// in-flight tool calls.
+	if paths := cfg.Agents.Defaults.AllowedPaths; len(paths) > 0 {
+		applyUserAllowedPaths(toolsReg, paths)
+		slog.Info("filesystem allowed paths reapplied from system_configs", "paths", len(paths))
+	}
 	setupMemoryEmbeddings(pgStores, providerRegistry)
 	usageCapSvc := usagecaps.NewService(pgStores.UsageCaps, pgStores.Providers)
 
@@ -340,7 +351,7 @@ func runGateway() {
 	_ = skillSearchTool // used via wireExtras → skillsLoader; kept for type clarity
 
 	// Register cron/heartbeat/session/message tools, aliases, allow-paths, store wiring.
-	heartbeatTool, hasMemory := wireExtraTools(pgStores, toolsReg, msgBus, workspace, dataDir, agentCfg, globalSkillsDir, builtinSkillsDir)
+	heartbeatTool, hasMemory := wireExtraTools(pgStores, toolsReg, msgBus, workspace, dataDir, agentCfg, globalSkillsDir, builtinSkillsDir, cfg.Cron.CommandEnabled)
 
 	// Register workstation_exec + claude_remote tools (Standard edition only; deny-all until Phase 6).
 	// cleanupWorkstation stops the activity sink retention goroutine and drains the write buffer.
@@ -532,12 +543,12 @@ func runGateway() {
 			oauthRefresher = r
 		}
 		mcpOAuthH = httpapi.NewMCPOAuthHandler(httpapi.MCPOAuthHandlerDeps{
-			MCPStore:   pgStores.MCP,
-			OAuthStore: pgStores.MCPOAuthTokens,
-			Discoverer: mcpoauth.NewDiscoverer(safeHTTPClient),
-			FlowMgr:    mcpoauth.NewFlowManager(safeHTTPClient),
-			Refresher:  oauthRefresher,
-			EventBus:   msgBus,
+			MCPStore:    pgStores.MCP,
+			OAuthStore:  pgStores.MCPOAuthTokens,
+			Discoverer:  mcpoauth.NewDiscoverer(safeHTTPClient),
+			FlowMgr:     mcpoauth.NewFlowManager(safeHTTPClient),
+			Refresher:   oauthRefresher,
+			EventBus:    msgBus,
 			PublicURL:   cfg.Gateway.PublicURL,
 			Port:        cfg.Gateway.Port,
 			TenantStore: pgStores.Tenants,
@@ -594,7 +605,7 @@ func runGateway() {
 	// Register all RPC methods
 	server.SetLogTee(logTee)
 	server.SetRuntimeLogsHandler(httpapi.NewRuntimeLogsHandler(logTee))
-	pairingMethods, heartbeatMethods, chatMethods, cfgPermsMethods := registerAllMethods(server, agentRouter, pgStores.Sessions, pgStores.RunTimeline, pgStores.Cron, pgStores.Pairing, cfg, cfgPath, workspace, dataDir, msgBus, execApprovalMgr, pgStores.Agents, pgStores.Skills, pgStores.ConfigSecrets, pgStores.Teams, contextFileInterceptor, logTee, pgStores.Heartbeats, pgStores.ConfigPermissions, pgStores.SystemConfigs, pgStores.Tenants, pgStores.SkillTenantCfgs, audioMgr, usageCapSvc)
+	pairingMethods, heartbeatMethods, chatMethods, cfgPermsMethods := registerAllMethods(server, agentRouter, pgStores.Sessions, pgStores.RunTimeline, pgStores.Cron, pgStores.Pairing, cfg, cfgPath, workspace, dataDir, msgBus, execApprovalMgr, pgStores.Agents, pgStores.Skills, pgStores.ConfigSecrets, pgStores.Teams, contextFileInterceptor, logTee, pgStores.Heartbeats, pgStores.ConfigPermissions, pgStores.SystemConfigs, pgStores.Tenants, pgStores.SkillTenantCfgs, audioMgr, usageCapSvc, providerRegistry)
 
 	// Phase 3: Agent hooks RPC methods (hooks.list/create/update/delete/toggle/test/history).
 	if hs, ok := pgStores.Hooks.(hooks.HookStore); ok && hs != nil {
@@ -699,8 +710,10 @@ func runGateway() {
 		// lazy per-user credential provisioning (via mcp_server_name +
 		// mcp_base_url in their instance config) can reach the partner's
 		// MCPServerStore. The MCP server authenticates each onboard call
-		// via the caller-supplied Bitrix access_token (Path B) — no shared
-		// admin secret is required. Channels with none of those set operate
+		// via the caller-supplied Bitrix access_token (the "Bitrix24
+		// OAuth → existing mcp_user_credentials bridge" — Bitrix-specific
+		// glue, not a generic MCP architecture pattern) — no shared admin
+		// secret is required. Channels with none of those set operate
 		// identically to before — the MCPStore arg is nil-safe inside the
 		// factory.
 		instanceLoader.RegisterFactory(channels.TypeBitrix24, bitrix24.FactoryWithPortalStoreAndMCP(pgStores.BitrixPortals, pgStores.MCP, bitrixEncKey))

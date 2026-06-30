@@ -78,6 +78,8 @@ func TestCronOutputContainsNoReplySentinel(t *testing.T) {
 		{name: "exact", in: "NO_REPLY", want: true},
 		{name: "prefix explanation", in: "NO_REPLY - nothing to report", want: true},
 		{name: "suffix", in: "No relevant update. NO_REPLY", want: true},
+		{name: "terminal glued punctuation", in: "This is directed at Bảo Ly Content, not me. I should stay silent.NO_REPLY", want: true},
+		{name: "standalone suffix after space", in: "This is not for me. NO_REPLY", want: true},
 		{name: "mid sentence", in: "No changes found. NO_REPLY for this run.", want: true},
 		{name: "lowercase", in: "no_reply", want: true},
 		{name: "decorative underscore", in: "NO_REPLY_", want: true},
@@ -177,6 +179,76 @@ func TestCronJobHandlerSuppressesNoReplyDelivery(t *testing.T) {
 			}
 			if got.Content != tt.content || got.Channel != "telegram" || got.ChatID != "chat-1" {
 				t.Fatalf("outbound message = %#v, want channel telegram chat chat-1 content %q", got, tt.content)
+			}
+		})
+	}
+}
+
+// fakeCronSessionStore records Reset calls. The embedded nil SessionStore
+// satisfies the interface; the cron handler only calls Reset/Save.
+type fakeCronSessionStore struct {
+	store.SessionStore
+	resetCount int
+}
+
+func (f *fakeCronSessionStore) Reset(context.Context, string)      { f.resetCount++ }
+func (f *fakeCronSessionStore) Save(context.Context, string) error { return nil }
+
+// A stateless cron run must start fresh by clearing BOTH the goclaw session
+// store and the Claude CLI on-disk session; a stateful run must keep both.
+func TestCronJobHandler_StatelessResetsSession(t *testing.T) {
+	cases := []struct {
+		name      string
+		stateless bool
+		wantReset bool
+	}{
+		{name: "stateless resets both layers", stateless: true, wantReset: true},
+		{name: "stateful keeps session", stateless: false, wantReset: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cliResetKeys []string
+			orig := cronCLISessionReset
+			cronCLISessionReset = func(_, key string) { cliResetKeys = append(cliResetKeys, key) }
+			defer func() { cronCLISessionReset = orig }()
+
+			fakeStore := &fakeCronSessionStore{}
+
+			sched := scheduler.NewScheduler(
+				scheduler.DefaultLanes(),
+				scheduler.QueueConfig{
+					Mode:          scheduler.QueueModeQueue,
+					Cap:           1,
+					Drop:          scheduler.DropOld,
+					DebounceMs:    0,
+					MaxConcurrent: 1,
+				},
+				func(context.Context, agent.RunRequest) (*agent.RunResult, error) {
+					return &agent.RunResult{Content: "ok"}, nil
+				},
+			)
+			defer sched.Stop()
+
+			handler := makeCronJobHandler(sched, nil, &config.Config{}, nil, fakeStore, nil, nil, nil)
+
+			if _, err := handler(&store.CronJob{
+				ID:        uuid.NewString(),
+				TenantID:  uuid.New(),
+				Name:      "j",
+				AgentID:   "reporter",
+				UserID:    "user-1",
+				Stateless: tc.stateless,
+				Payload:   store.CronPayload{Kind: "agent_turn", Message: "m"},
+			}); err != nil {
+				t.Fatalf("cron handler error: %v", err)
+			}
+
+			if gotStore := fakeStore.resetCount > 0; gotStore != tc.wantReset {
+				t.Errorf("session store reset called=%v, want %v", gotStore, tc.wantReset)
+			}
+			if gotCLI := len(cliResetKeys) > 0; gotCLI != tc.wantReset {
+				t.Errorf("CLI session reset called=%v, want %v", gotCLI, tc.wantReset)
 			}
 		})
 	}

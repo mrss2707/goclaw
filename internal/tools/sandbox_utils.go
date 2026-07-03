@@ -38,11 +38,26 @@ func SandboxCwd(ctx context.Context, globalWorkspace, containerBase string) (str
 }
 
 func effectiveSandboxWorkspace(ctx context.Context, globalWorkspace string) (string, error) {
-	// Prefer team root so cross-scope reads work within same mount.
-	if teamRoot := ToolTeamRootFromCtx(ctx); teamRoot != "" {
+	teamRoot := ToolTeamRootFromCtx(ctx)
+	ws := ToolWorkspaceFromCtx(ctx)
+
+	// Prefer team root as mount only when the agent's active workspace lives
+	// under it (dispatched team task). Otherwise — e.g. a team member working in
+	// personal workspace — the personal workspace is outside the team root tree
+	// and sandboxCwdForHostPath would fail. In that case fall back to the
+	// personal workspace; cross-scope team reads are still available through
+	// host-side allowed-prefix resolution.
+	if teamRoot != "" && ws != "" {
+		rel, err := filepath.Rel(teamRoot, ws)
+		if err == nil && !strings.HasPrefix(filepath.Clean(rel), "..") {
+			return canonicalSandboxWorkspace(teamRoot), nil
+		}
+		return canonicalSandboxWorkspace(ws), nil
+	}
+	if teamRoot != "" {
 		return canonicalSandboxWorkspace(teamRoot), nil
 	}
-	if ws := ToolWorkspaceFromCtx(ctx); ws != "" {
+	if ws != "" {
 		return canonicalSandboxWorkspace(ws), nil
 	}
 	if globalWorkspace != "" && store.IsMasterScope(ctx) {

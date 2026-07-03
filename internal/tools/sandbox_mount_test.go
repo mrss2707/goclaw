@@ -79,6 +79,39 @@ func TestEffectiveSandboxWorkspacePrefersTeamRoot(t *testing.T) {
 	}
 }
 
+func TestEffectiveSandboxWorkspacePersonalOutsideTeamRoot(t *testing.T) {
+	// Regression: team member (non-dispatched) whose personal workspace is
+	// outside the team root tree. effectiveSandboxWorkspace must NOT use team
+	// root as the mount, otherwise sandboxCwdForHostPath fails.
+	teamRoot := "/app/workspace/teams/team-1"
+	personalWs := "/app/workspace/agents/agent-a/user-123"
+
+	ctx := WithToolTeamRoot(context.Background(), teamRoot)
+	ctx = WithToolWorkspace(ctx, personalWs)
+
+	got, err := effectiveSandboxWorkspace(ctx, "/srv/goclaw/workspace")
+	if err != nil {
+		t.Fatalf("effectiveSandboxWorkspace returned error: %v", err)
+	}
+	if got != personalWs {
+		t.Fatalf("effectiveSandboxWorkspace = %q, want personal workspace %q", got, personalWs)
+	}
+}
+
+func TestEffectiveSandboxWorkspaceTeamRootOnlyNoWorkspace(t *testing.T) {
+	// Team root set but no active workspace — should still use team root.
+	teamRoot := "/app/workspace/teams/team-1"
+	ctx := WithToolTeamRoot(context.Background(), teamRoot)
+
+	got, err := effectiveSandboxWorkspace(ctx, "/srv/goclaw/workspace")
+	if err != nil {
+		t.Fatalf("effectiveSandboxWorkspace returned error: %v", err)
+	}
+	if got != teamRoot {
+		t.Fatalf("effectiveSandboxWorkspace = %q, want team root %q", got, teamRoot)
+	}
+}
+
 func TestEffectiveSandboxWorkspaceFailsClosedWithoutTenantWorkspace(t *testing.T) {
 	ctx := store.WithTenantID(context.Background(), uuid.New())
 
